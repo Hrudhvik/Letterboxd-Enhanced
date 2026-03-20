@@ -131,25 +131,39 @@
 
     if (resp?.imdb) {
       hasAny = true;
-      g.innerHTML += `<a class="lbe-rc" href="${resp.imdb.url || "#"}" target="_blank" style="--a:#F5C518"><span class="lbe-b lbe-bi" style="width:24px;height:24px;font-size:10px;border-radius:4px">IMDb</span><div class="lbe-ri"><div class="lbe-rs">${resp.imdb.score}/10</div><div class="lbe-rd">${resp.imdb.votes || ""}</div></div></a>`;
+      g.innerHTML += `<div class="lbe-rc" data-url="${resp.imdb.url || "#"}" style="--a:#F5C518"><span class="lbe-b lbe-bi" style="width:24px;height:24px;font-size:10px;border-radius:4px">IMDb</span><div class="lbe-ri"><div class="lbe-rs">${resp.imdb.score}/10</div><div class="lbe-rd">${resp.imdb.votes || ""}</div></div></div>`;
     }
     if (resp?.rt) {
       hasAny = true;
-      g.innerHTML += `<a class="lbe-rc" href="${resp.rt.url || "#"}" target="_blank" style="--a:#FA320A"><span class="lbe-b lbe-br" style="width:24px;height:24px;font-size:10px;border-radius:4px">RT</span><div class="lbe-ri"><div class="lbe-rs">${resp.rt.score}</div><div class="lbe-rd">${parseInt(resp.rt.score) >= 60 ? "Fresh" : "Rotten"}</div></div></a>`;
+      g.innerHTML += `<div class="lbe-rc" data-url="${resp.rt.url || "#"}" style="--a:#FA320A"><span class="lbe-b lbe-br" style="width:24px;height:24px;font-size:10px;border-radius:4px">RT</span><div class="lbe-ri"><div class="lbe-rs">${resp.rt.score}</div><div class="lbe-rd">${parseInt(resp.rt.score) >= 60 ? "Fresh" : "Rotten"}</div></div></div>`;
     }
     if (resp?.mal) {
       hasAny = true;
-      g.innerHTML += `<a class="lbe-rc" href="${resp.mal.url || "#"}" target="_blank" style="--a:#2E51A2"><span class="lbe-b lbe-bm" style="width:24px;height:24px;font-size:10px;border-radius:4px">MAL</span><div class="lbe-ri"><div class="lbe-rs">${resp.mal.score}/10</div><div class="lbe-rd">${resp.mal.members ? Math.round(resp.mal.members / 1000) + "K members" : ""}</div></div></a>`;
+      g.innerHTML += `<div class="lbe-rc" data-url="${resp.mal.url || "#"}" style="--a:#2E51A2"><span class="lbe-b lbe-bm" style="width:24px;height:24px;font-size:10px;border-radius:4px">MAL</span><div class="lbe-ri"><div class="lbe-rs">${resp.mal.score}/10</div><div class="lbe-rd">${resp.mal.members ? Math.round(resp.mal.members / 1000) + "K members" : ""}</div></div></div>`;
     }
     if (resp?.mc) {
       hasAny = true;
       const mcS = parseInt(resp.mc.score);
       const mcC = mcS >= 61 ? "#6c3" : mcS >= 40 ? "#fc3" : "#f00";
-      g.innerHTML += `<div class="lbe-rc" style="--a:${mcC}"><span style="background:${mcC};color:#fff;width:24px;height:24px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${mcS}</span><div class="lbe-ri"><div class="lbe-rs">${mcS}/100</div><div class="lbe-rd">Metacritic</div></div></div>`;
+      const mcTitle = document.querySelector("h1.headline-1")?.textContent?.trim() || document.querySelector(".film-title-wrapper h1")?.textContent?.trim() || "";
+      const mcUrl = resp.mc.url || `https://www.metacritic.com/search/${encodeURIComponent(mcTitle)}/`;
+      g.innerHTML += `<a class="lbe-rc" href="${mcUrl}" target="_blank" rel="noopener noreferrer" style="--a:${mcC}"><span style="background:${mcC};color:#fff;width:24px;height:24px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${mcS}</span><div class="lbe-ri"><div class="lbe-rs">${mcS}/100</div><div class="lbe-rd">Metacritic</div></div></a>`;
     }
 
-    if (!hasAny) return null; // Don't show empty panel
-    p.appendChild(g); return p;
+    if (!hasAny) return null;
+    p.appendChild(g);
+
+    // Attach click handlers via JS to bypass Letterboxd's router
+    p.querySelectorAll(".lbe-rc[data-url]").forEach(card => {
+      card.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const url = card.dataset.url;
+        if (url && url !== "#") window.open(url, "_blank");
+      });
+    });
+
+    return p;
   }
 
   // ── Fetch ──────────────────────────────────────────────────────

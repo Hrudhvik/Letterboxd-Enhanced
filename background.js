@@ -160,10 +160,11 @@ async function omdbById(imdbId, retry = 0) {
     }
     markUsed(key);
     const result = {};
+    const title = d.Title || "";
     if (d.imdbRating && d.imdbRating !== "N/A") result.imdb = { score: d.imdbRating, votes: d.imdbVotes, url: `https://www.imdb.com/title/${imdbId}/` };
     const rt = (d.Ratings || []).find(r => r.Source === "Rotten Tomatoes");
-    if (rt) result.rt = { score: rt.Value, url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(d.Title || "")}` };
-    if (d.Metascore && d.Metascore !== "N/A") result.mc = { score: d.Metascore };
+    if (rt) result.rt = { score: rt.Value, url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(title)}` };
+    if (d.Metascore && d.Metascore !== "N/A") result.mc = { score: d.Metascore, url: `https://www.metacritic.com/search/${encodeURIComponent(title)}/` };
     return result;
   } catch (e) { return null; }
 }
