@@ -1,0 +1,231 @@
+// content.js — Letterboxd Enhanced
+
+(function () {
+  "use strict";
+
+  function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+  let _username = null;
+  function getUsername() {
+    if (_username) return _username;
+    const el = document.querySelector('.main-nav .subnav-trigger');
+    if (el) _username = el.textContent.trim().toLowerCase();
+    return _username;
+  }
+
+  function slugFromUrl(url) { const m = (url || "").match(/\/film\/([^/?#]+)/); return m ? m[1] : null; }
+  function isFilmPage() { return /^\/film\/[^/]+\/?$/.test(location.pathname); }
+
+  function getFilmInfo() {
+    const h = document.querySelector("h1.headline-1") || document.querySelector("h1");
+    if (!h) return null;
+    const title = h.textContent.trim();
+    const yearEl = document.querySelector(".releaseyear a") || document.querySelector("[href*='/films/year/']");
+    const year = yearEl ? yearEl.textContent.trim() : null;
+    let runtime = null;
+    document.querySelectorAll("p.text-link.text-footer").forEach(el => {
+      const m = el.textContent.match(/(\d+)\s*mins?/);
+      if (m) { const mins = parseInt(m[1]); const hr = Math.floor(mins / 60); runtime = hr > 0 ? `${hr}h ${mins % 60}min` : `${mins}min`; }
+    });
+    const genres = [];
+    document.querySelectorAll('a[href*="/films/genre/"]').forEach(el => {
+      const n = el.textContent.trim();
+      if (n && !genres.find(g => g.name === n)) genres.push({ name: n, href: el.href });
+    });
+    let contentRating = null;
+    document.querySelectorAll('a[href*="/rated/"]').forEach(el => {
+      const t = el.textContent.trim();
+      if (/^(G|PG|PG-13|R|NC-17|NR|TV-MA|TV-14|TV-PG|U|UA|A|12A|12|15|18)$/i.test(t)) contentRating = t;
+    });
+    let lbRating = null;
+    const lbEl = document.querySelector('.average-rating');
+    if (lbEl) { const p = parseFloat(lbEl.textContent); if (!isNaN(p)) lbRating = p; }
+    return { title, year, runtime, genres, contentRating, lbRating, filmSlug: slugFromUrl(location.pathname) };
+  }
+
+  function getGridInfo(el) {
+    const slug = el.dataset?.filmSlug || slugFromUrl(el.querySelector("a")?.href);
+    const rawTitle = el.dataset?.filmName || el.querySelector("img")?.alt || "";
+    const title = rawTitle.replace(/^Poster for\s*/i, "");
+    const year = el.dataset?.filmReleaseYear || null;
+    const r = el.dataset?.averageRating;
+    return { title, year, runtime: null, genres: [], contentRating: null, lbRating: r ? parseFloat(r) : null, filmSlug: slug };
+  }
+
+  // ── Stars ──────────────────────────────────────────────────────
+  function star(on, sz = 9) { return `<svg class="lbe-star${on ? "" : " lbe-star-off"}" viewBox="0 0 12 12" width="${sz}" height="${sz}"><polygon points="6,1 7.5,4.2 11,4.6 8.5,7 9.2,10.5 6,8.8 2.8,10.5 3.5,7 1,4.6 4.5,4.2" fill="currentColor"/></svg>`; }
+  function stars(r, sz = 9) { const f = Math.floor(r), h = r - f >= 0.3, e = 5 - f - (h ? 1 : 0); let s = ""; for (let i = 0; i < f; i++) s += star(1, sz); if (h) s += star(0, sz); for (let i = 0; i < e; i++) s += star(0, sz); return s; }
+
+  // ── Build overlay HTML ─────────────────────────────────────────
+  // resp = { imdb, rt, mc, mal } — flat structure from background.js
+  function overlayHTML(info, resp, sm) {
+    const t = (info.title || "").replace(/^Poster for\s*/i, "");
+    let h = `<div class="lbe-ot${sm ? " lbe-sm" : ""}">${t}</div>`;
+
+    const meta = [info.year, info.runtime, info.contentRating].filter(Boolean).join(" · ");
+    if (meta) h += `<div class="lbe-om">${meta}</div>`;
+
+    // LB rating
+    let lb = "";
+    if (info.lbRating) lb = `<div class="lbe-lb"><span class="lbe-stars">${stars(info.lbRating, sm ? 7 : 9)}</span><span class="lbe-lbv">${info.lbRating.toFixed(1)}</span></div>`;
+
+    // External — always show all 3, use - when unavailable
+    const malScore = resp?.mal?.score || "-";
+    const rtScore = resp?.rt?.score || "-";
+    const imdbScore = resp?.imdb?.score || "-";
+
+    let ext = "";
+    ext += `<span class="lbe-er"><span class="lbe-b lbe-bm">M</span>${malScore}</span>`;
+    ext += `<span class="lbe-er"><span class="lbe-b lbe-br">R</span>${rtScore}</span>`;
+    ext += `<span class="lbe-er"><span class="lbe-b lbe-bi">I</span>${imdbScore}</span>`;
+
+    h += `<div class="lbe-or">${lb}<div class="lbe-ext">${ext}</div></div>`;
+
+    if (!sm && info.genres.length) h += `<div class="lbe-og">${info.genres.map(g => `<a class="lbe-gt" href="${g.href}">${g.name}</a>`).join("")}</div>`;
+    return h;
+  }
+
+  // ── Sidebar ratings ────────────────────────────────────────────
+  // resp = { imdb, rt, mc, mal }
+  function buildSidebar(resp) {
+    document.querySelector(".lbe-rp")?.remove();
+    const p = document.createElement("div"); p.className = "lbe-rp";
+    p.innerHTML = `<div class="lbe-rh">EXTERNAL RATINGS</div>`;
+    const g = document.createElement("div"); g.className = "lbe-rg";
+
+    // IMDb
+    const imdb = resp?.imdb;
+    g.innerHTML += `<a class="lbe-rc" href="${imdb?.url || "#"}" target="_blank" style="--a:#F5C518"><span class="lbe-b lbe-bi" style="width:24px;height:24px;font-size:10px;border-radius:4px">IMDb</span><div class="lbe-ri"><div class="lbe-rs">${imdb ? imdb.score + "/10" : "-"}</div><div class="lbe-rd">${imdb?.votes || ""}</div></div></a>`;
+
+    // RT
+    const rt = resp?.rt;
+    g.innerHTML += `<a class="lbe-rc" href="${rt?.url || "#"}" target="_blank" style="--a:#FA320A"><span class="lbe-b lbe-br" style="width:24px;height:24px;font-size:10px;border-radius:4px">RT</span><div class="lbe-ri"><div class="lbe-rs">${rt ? rt.score : "-"}</div><div class="lbe-rd">${rt ? (parseInt(rt.score) >= 60 ? "Fresh" : "Rotten") : ""}</div></div></a>`;
+
+    // MAL
+    const mal = resp?.mal;
+    g.innerHTML += `<a class="lbe-rc" href="${mal?.url || "#"}" target="_blank" style="--a:#2E51A2"><span class="lbe-b lbe-bm" style="width:24px;height:24px;font-size:10px;border-radius:4px">MAL</span><div class="lbe-ri"><div class="lbe-rs">${mal ? mal.score + "/10" : "-"}</div><div class="lbe-rd">${mal?.members ? Math.round(mal.members / 1000) + "K members" : ""}</div></div></a>`;
+
+    // Metacritic
+    const mc = resp?.mc;
+    const mcS = mc ? parseInt(mc.score) : null;
+    const mcC = mcS ? (mcS >= 61 ? "#6c3" : mcS >= 40 ? "#fc3" : "#f00") : "#678";
+    g.innerHTML += `<div class="lbe-rc" style="--a:${mcC}"><span style="background:${mcC};color:#fff;width:24px;height:24px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${mcS || "-"}</span><div class="lbe-ri"><div class="lbe-rs">${mcS ? mcS + "/100" : "-"}</div><div class="lbe-rd">Metacritic</div></div></div>`;
+
+    p.appendChild(g);
+    return p;
+  }
+
+  // ── Fetch helper ───────────────────────────────────────────────
+  async function fetchRatings(title, year, filmSlug) {
+    return chrome.runtime.sendMessage({
+      type: "FETCH_RATINGS", title, year,
+      username: getUsername(), filmSlug,
+    });
+  }
+
+  // ── Film page poster overlay ───────────────────────────────────
+  async function injectPoster(info) {
+    const c = document.querySelector("div.film-poster") || document.querySelector("div.poster");
+    if (!c || c.querySelector(".lbe-ov")) return;
+    c.style.position = "relative"; c.style.overflow = "hidden";
+    const img = c.querySelector("img"); if (img) { img.alt = ""; img.title = ""; }
+
+    const ov = document.createElement("div"); ov.className = "lbe-ov lbe-h"; ov.style.pointerEvents = "none";
+    ov.innerHTML = overlayHTML(info, null, false);
+    c.appendChild(ov);
+    c.addEventListener("mouseenter", () => ov.classList.remove("lbe-h"));
+    c.addEventListener("mouseleave", () => ov.classList.add("lbe-h"));
+
+    try {
+      const resp = await fetchRatings(info.title, info.year, info.filmSlug);
+      console.log("LBE: poster overlay got", resp);
+      ov.innerHTML = overlayHTML(info, resp, false);
+    } catch (e) { console.error("LBE:", e); }
+  }
+
+  // ── Film page sidebar ──────────────────────────────────────────
+  async function injectSidebar(info) {
+    const sb = document.querySelector(".sidebar");
+    if (!sb || sb.querySelector(".lbe-rp")) return;
+    try {
+      const resp = await fetchRatings(info.title, info.year, info.filmSlug);
+      console.log("LBE: sidebar got", resp);
+      sb.appendChild(buildSidebar(resp));
+    } catch (e) { console.error("LBE:", e); }
+  }
+
+  // ── Grid posters ───────────────────────────────────────────────
+  const cache = new Map(), pending = new Set();
+
+  function setupGrid(el) {
+    if (el.dataset.lbe) return;
+    el.dataset.lbe = "1"; el.style.position = "relative"; el.style.overflow = "hidden";
+    const img = el.querySelector("img"); if (img) img.title = "";
+    let ov = null;
+
+    el.addEventListener("mouseenter", async () => {
+      const info = getGridInfo(el);
+      if (!info.filmSlug && !info.title) return;
+      const k = info.filmSlug || info.title;
+      if (!ov) { ov = document.createElement("div"); ov.className = "lbe-ov lbe-h"; ov.style.pointerEvents = "none"; el.appendChild(ov); }
+      ov.classList.remove("lbe-h");
+
+      const c = cache.get(k);
+      if (c) { ov.innerHTML = overlayHTML(info, c, true); return; }
+      ov.innerHTML = overlayHTML(info, null, true);
+
+      if (pending.has(k)) return; pending.add(k);
+      try {
+        const resp = await fetchRatings(info.title, info.year, info.filmSlug);
+        cache.set(k, resp);
+        if (el.matches(":hover") && ov) ov.innerHTML = overlayHTML(info, resp, true);
+      } catch (e) {} finally { pending.delete(k); }
+    });
+    el.addEventListener("mouseleave", () => { if (ov) ov.classList.add("lbe-h"); });
+  }
+
+  function setupGrids() {
+    document.querySelectorAll('.film-poster, .poster-container, .linked-film-poster').forEach(el => {
+      if (isFilmPage() && el.closest(".film-detail-content")) return;
+      if (!el.dataset.filmSlug && !el.querySelector('a[href*="/film/"]')) return;
+      setupGrid(el);
+    });
+  }
+
+  // ── Metadata bar ───────────────────────────────────────────────
+  function metaBar() {
+    if (document.querySelector(".lbe-mb")) return;
+    const info = getFilmInfo(); if (!info) return;
+    if (!info.runtime && !info.genres.length && !info.contentRating) return;
+    const bar = document.createElement("div"); bar.className = "lbe-mb";
+    if (info.runtime) bar.innerHTML += `<span class="lbe-mt lbe-mr">${info.runtime}</span>`;
+    if (info.contentRating) bar.innerHTML += `<span class="lbe-mt lbe-mc">${info.contentRating}</span>`;
+    info.genres.forEach(g => { bar.innerHTML += `<a class="lbe-mt lbe-mg" href="${g.href}">${g.name}</a>`; });
+    const h = document.querySelector("h1.headline-1") || document.querySelector("h1");
+    if (h) h.parentElement.insertBefore(bar, h.nextSibling);
+  }
+
+  // ── Init ───────────────────────────────────────────────────────
+  function init() {
+    chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true }, s => {
+      if (isFilmPage()) {
+        const info = getFilmInfo();
+        if (info) {
+          if (s.toggleMeta) metaBar();
+          if (s.togglePoster) injectPoster(info);
+          if (s.toggleRatings) injectSidebar(info);
+        }
+      }
+      if (s.togglePoster) setupGrids();
+    });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+
+  let last = location.href;
+  new MutationObserver(debounce(() => {
+    if (location.href !== last) { last = location.href; setTimeout(init, 500); }
+    setupGrids();
+  }, 200)).observe(document.body, { childList: true, subtree: true });
+})();

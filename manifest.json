@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Letterboxd Enhanced",
+  "version": "1.0.0",
+  "description": "Enhance Letterboxd with external ratings (IMDb, MAL, Rotten Tomatoes), poster overlay, and improved layout.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://letterboxd.com/*",
+    "https://www.omdbapi.com/*",
+    "https://api.jikan.moe/*",
+    "https://api.themoviedb.org/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://letterboxd.com/*"],
+      "css": ["styles.css"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

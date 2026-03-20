@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { width: 320px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #14181c; color: #9ab; }
+    .header { padding: 16px 18px 12px; border-bottom: 1px solid #2c3440; }
+    .header h1 { font-size: 15px; font-weight: 700; color: #def; }
+    .header p { font-size: 11px; color: #678; margin-top: 3px; }
+    .section { padding: 14px 18px; border-bottom: 1px solid #2c3440; }
+    .section-title { font-size: 10px; font-weight: 600; letter-spacing: 1.5px; color: #678; text-transform: uppercase; margin-bottom: 10px; }
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { display: block; font-size: 12px; color: #9ab; margin-bottom: 4px; font-weight: 500; }
+    .field input[type="text"] { width: 100%; padding: 7px 10px; background: #1b2028; border: 1px solid #2c3440; border-radius: 4px; color: #def; font-size: 12px; font-family: monospace; outline: none; }
+    .field input[type="text"]:focus { border-color: #00e054; }
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
+    .toggle-row span { font-size: 13px; color: #9ab; }
+    .toggle { position: relative; width: 36px; height: 20px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider { position: absolute; inset: 0; background: #2c3440; border-radius: 20px; cursor: pointer; transition: background 200ms; }
+    .toggle .slider::before { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; bottom: 3px; background: #678; border-radius: 50%; transition: all 200ms; }
+    .toggle input:checked + .slider { background: #00e054; }
+    .toggle input:checked + .slider::before { transform: translateX(16px); background: #fff; }
+    .btn-save { display: block; width: calc(100% - 36px); margin: 14px 18px; padding: 9px; background: #00e054; color: #14181c; font-size: 13px; font-weight: 700; border: none; border-radius: 4px; cursor: pointer; }
+    .btn-save:hover { opacity: 0.85; }
+    .status { text-align: center; font-size: 11px; color: #00e054; padding-bottom: 12px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Letterboxd Enhanced</h1>
+    <p>v1.0 — External ratings &amp; poster overlay</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">API Keys</div>
+    <div class="field">
+      <label>TMDB API Key (required) <a href="https://www.themoviedb.org/settings/api" target="_blank" style="color:#40bcf4;text-decoration:none;font-size:10px">(get free)</a></label>
+      <input type="text" id="tmdbKey" placeholder="Primary source — finds any film worldwide" />
+    </div>
+    <div class="field">
+      <label>OMDb API Keys (optional, for RT) <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" style="color:#40bcf4;text-decoration:none;font-size:10px">(get free)</a></label>
+      <textarea id="omdbKey" placeholder="Adds Rotten Tomatoes + Metacritic scores" rows="2" style="width:100%;padding:7px 10px;background:#1b2028;border:1px solid #2c3440;border-radius:4px;color:#def;font-size:11px;font-family:monospace;outline:none;resize:vertical;"></textarea>
+      <div id="keyStats" style="margin-top:4px;font-size:10px;color:#678;"></div>
+    </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Features</div>
+    <div class="toggle-row">
+      <span>Poster Overlay</span>
+      <label class="toggle"><input type="checkbox" id="togglePoster" checked /><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <span>Sidebar Ratings</span>
+      <label class="toggle"><input type="checkbox" id="toggleRatings" checked /><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <span>Metadata Bar</span>
+      <label class="toggle"><input type="checkbox" id="toggleMeta" checked /><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <span>Friends Histogram</span>
+      <label class="toggle"><input type="checkbox" id="toggleFriendsHisto" checked /><span class="slider"></span></label>
+    </div>
+  </div>
+
+  <button class="btn-save" id="save">Save Settings</button>
+  <div class="status" id="status">Settings saved ✓</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
