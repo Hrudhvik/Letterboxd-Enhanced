@@ -369,9 +369,177 @@
     if (h) h.parentElement.insertBefore(bar, h.nextSibling);
   }
 
+  // ── List Progress ──────────────────────────────────────────────
+  const listProgressCache = new Map();
+  const listPending = new Set();
+
+  async function fetchListProgress(listUrl) {
+    const url = listUrl.startsWith("http") ? listUrl : "https://letterboxd.com" + listUrl;
+    try {
+      const resp = await fetch(url, { credentials: "same-origin" });
+      if (!resp.ok) return null;
+      const html = await resp.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+
+      // Method 1: Native progress panel (the standard Letterboxd way)
+      const panel = doc.querySelector(".progress-panel");
+      if (panel) {
+        const pctEl = panel.querySelector(".progress-percentage");
+        const countEl = panel.querySelector(".js-progress-count");
+        const totalEl = panel.querySelector(".progress-count");
+        if (pctEl && countEl && totalEl) {
+          const percentage = pctEl.textContent.trim();
+          const count = countEl.textContent.trim();
+          const totalMatch = totalEl.textContent.match(/of\s+([\d,]+)/);
+          const total = totalMatch ? totalMatch[1] : "?";
+          if (percentage) return { count, total, percentage };
+        }
+      }
+
+      // Method 2: Try .list-progress or any progress bar on the page
+      const altProgress = doc.querySelector(".list-progress, [data-progress], .progress");
+      if (altProgress) {
+        const pct = altProgress.dataset.progress || altProgress.querySelector("[data-progress]")?.dataset.progress;
+        if (pct) {
+          const numMatch = doc.body.textContent.match(/(\d+)\s+of\s+([\d,]+)/);
+          if (numMatch) return { count: numMatch[1], total: numMatch[2], percentage: pct };
+        }
+      }
+
+      // Method 3: Look for "You've seen X of Y" text anywhere on the page
+      const bodyText = doc.body?.textContent || "";
+      const seenMatch = bodyText.match(/You.ve\s+(?:seen|watched)\s+(\d+)\s+of\s+([\d,]+)/i);
+      if (seenMatch) {
+        const count = parseInt(seenMatch[1]);
+        const total = parseInt(seenMatch[2].replace(/,/g, ""));
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+        return { count: seenMatch[1], total: seenMatch[2], percentage: String(pct) };
+      }
+
+      // Method 4: Count watched films from poster overlays on the list page
+      const allFilms = doc.querySelectorAll(".poster-list .film-poster, .poster-list .poster-container, .poster-list li");
+      if (allFilms.length > 0) {
+        let watched = 0;
+        allFilms.forEach(el => {
+          if (el.querySelector(".watched-overlay") || el.classList.contains("film-watched") ||
+              el.dataset.ownerRating || el.querySelector("[data-owner-rating]") ||
+              el.querySelector(".icon-watched") || el.querySelector(".has-overlay")) {
+            watched++;
+          }
+        });
+
+        // Get the real total from header/body text — page 1 might not show all films
+        let total = allFilms.length;
+        const filmCountMatch = bodyText.match(/([\d,]+)\s+films?\b/);
+        if (filmCountMatch) {
+          const parsedTotal = parseInt(filmCountMatch[1].replace(/,/g, ""));
+          if (parsedTotal >= total) total = parsedTotal;
+        }
+        const pct = total > 0 ? Math.round((watched / total) * 100) : 0;
+        if (watched > 0) return { count: String(watched), total: String(total), percentage: String(pct) };
+      }
+
+      return null;
+    } catch { return null; }
+  }
+
+  function createListProgressBar(data) {
+    const c = document.createElement("div");
+    c.className = "lbe-lp-container";
+    const pct = parseFloat(data.percentage);
+    c.innerHTML = `
+      <div class="lbe-lp-bar-track"><div class="lbe-lp-bar" style="width:${Math.min(pct, 100)}%"></div></div>
+      <div class="lbe-lp-text">
+        <span class="lbe-lp-label">You've watched ${data.count} of ${data.total}</span>
+        <span class="lbe-lp-pct">${data.percentage}%</span>
+      </div>`;
+    return c;
+  }
+
+  // Track which DOM nodes already have a bar injected after them
+  const injectedBars = new WeakSet();
+
+  async function processListLink(el, key) {
+    if (injectedBars.has(el)) return;
+
+    // Check cache
+    if (listProgressCache.has(key)) {
+      const cached = listProgressCache.get(key);
+      if (cached && cached.percentage) {
+        injectedBars.add(el);
+        el.insertAdjacentElement("afterend", createListProgressBar(cached));
+      }
+      return;
+    }
+
+    if (listPending.has(key)) return;
+    listPending.add(key);
+
+    try {
+      const href = el.getAttribute("href") || "";
+      const data = await fetchListProgress(href);
+      console.log("LBE: List Progress —", key, "→", data);
+      listProgressCache.set(key, data);
+      if (injectedBars.has(el)) return; // check again after async
+      if (data && data.percentage && parseInt(data.percentage) >= 0) {
+        injectedBars.add(el);
+        el.insertAdjacentElement("afterend", createListProgressBar(data));
+      }
+    } catch { /* silently skip */ }
+    finally { listPending.delete(key); }
+  }
+
+  function scanListProgress() {
+    const listUrlPattern = /\/[^/]+\/list\/[^/]+/;
+
+    // Remove any previously orphaned bars (safety cleanup)
+    // Not needed normally but helps if DOM changes
+
+    // Gather ALL <a> tags linking to lists
+    const allLinks = document.querySelectorAll('a[href*="/list/"]');
+
+    // Group by: which <a> with images should get the bar?
+    // For each link, find its closest "card-like" ancestor and only pick
+    // the FIRST image-bearing link per card.
+    const processed = new Set(); // "cardId::listKey" → prevents duplicates
+
+    const toProcess = [];
+
+    allLinks.forEach(el => {
+      if (injectedBars.has(el)) return;
+      // Already has a bar right after it?
+      if (el.nextElementSibling?.classList?.contains("lbe-lp-container")) return;
+
+      const href = el.getAttribute("href") || "";
+      if (!listUrlPattern.test(href)) return;
+      if (el.closest(".lbe-lp-container") || el.closest("nav") || el.closest("footer")) return;
+      // Skip tiny text-only links (no images, very little content)
+      const hasImages = !!el.querySelector("img");
+      if (!hasImages) return; // ONLY attach to poster-collage links
+
+      const key = href.replace(/^https?:\/\/letterboxd\.com/, "").replace(/\/$/, "");
+
+      // Create a unique ID for this card position to prevent duplicates
+      // Use the element's offset position as a rough card identifier
+      const rect = el.getBoundingClientRect();
+      const cardId = `${Math.round(rect.left)}:${Math.round(rect.top)}`;
+      const dedupKey = cardId + "::" + key;
+
+      if (processed.has(dedupKey)) return;
+      processed.add(dedupKey);
+
+      toProcess.push({ el, key });
+    });
+
+    if (toProcess.length > 0) console.log("LBE: List Progress — found", toProcess.length, "list cards to process");
+    toProcess.forEach(({ el, key }, i) => {
+      setTimeout(() => processListLink(el, key), i * 200);
+    });
+  }
+
   // ── Init ───────────────────────────────────────────────────────
   function init() {
-    chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true }, s => {
+    chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true }, s => {
       if (isFilmPage()) {
         const info = getFilmInfo();
         if (info) {
@@ -381,6 +549,7 @@
         }
       }
       if (s.togglePoster) setupGrids();
+      if (s.toggleListProgress) scanListProgress();
     });
   }
 
@@ -391,5 +560,6 @@
   new MutationObserver(debounce(() => {
     if (location.href !== last) { last = location.href; setTimeout(init, 500); }
     setupGrids();
+    chrome.storage.sync.get({ toggleListProgress: true }, s => { if (s.toggleListProgress) scanListProgress(); });
   }, 200)).observe(document.body, { childList: true, subtree: true });
 })();
