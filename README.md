@@ -35,7 +35,9 @@ Scrapes your friends' ratings for each film and displays a histogram with averag
 
 ## Screenshots
 
-*Coming soon*
+<img width="728" height="955" alt="image" src="https://github.com/user-attachments/assets/e470a4cd-f7b8-47f8-9f3a-e5e4931def59" />
+<img width="1919" height="977" alt="image" src="https://github.com/user-attachments/assets/4662a1fd-88e8-4a6f-84b8-3d3830e92c54" />
+<img width="610" height="356" alt="image" src="https://github.com/user-attachments/assets/df5e131c-b63a-44a7-8076-ac875c73eba5" />
 
 ---
 
