@@ -48,11 +48,8 @@
   // Review/user-film pages: /username/film/slug/ (viewing a review or user's film activity)
   function isReviewPage() {
     if (isFilmPage()) return false;
-    // URL pattern: /username/film/slug/
-    if (/^\/[^/]+\/film\/[^/]+\/?$/.test(location.pathname)) return true;
-    // DOM fallback: page has review content + sidebar
-    return !!(document.querySelector(".review, .review-detail, .viewing-poster, [data-film-slug]") ||
-              (document.querySelector(".sidebar") && document.querySelector('a[href*="/film/"]') && document.querySelector(".body-text, .review-body")));
+    // Only match /username/film/slug/ URL pattern (review pages)
+    return /^\/[^/]+\/film\/[^/]+\/?$/.test(location.pathname);
   }
 
   function getFilmSlugFromReviewPage() {
