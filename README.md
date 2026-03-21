@@ -48,6 +48,8 @@ Progress data is fetched from each list's detail page in the background using yo
 <img width="728" height="955" alt="image" src="https://github.com/user-attachments/assets/e470a4cd-f7b8-47f8-9f3a-e5e4931def59" />
 <img width="1919" height="977" alt="image" src="https://github.com/user-attachments/assets/4662a1fd-88e8-4a6f-84b8-3d3830e92c54" />
 <img width="610" height="356" alt="image" src="https://github.com/user-attachments/assets/df5e131c-b63a-44a7-8076-ac875c73eba5" />
+<img width="1415" height="330" alt="image" src="https://github.com/user-attachments/assets/6d66036b-cda1-49f9-8213-ea6c4916ef30" />
+
 
 ---
 
