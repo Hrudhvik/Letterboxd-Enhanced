@@ -265,11 +265,12 @@ async function malSearch(query, englishTitle, originalTitle, year) {
 }
 
 // ── Friends Ratings — scrape from Letterboxd ─────────────────────
-// Fetches /film/{slug}/friends/rated/ to get friends' individual ratings
+// Fetches /username/friends/film/{slug}/ to get friends' individual ratings
 // and computes a histogram + average.
+// Also scrapes the user's own rating from /film/{slug}/ for optional inclusion.
 // Supports pagination — Letterboxd shows ~30 friends per page.
 async function scrapeFriendsRatings(filmSlug, username) {
-  if (!filmSlug || !username) return { ratings: [], avg: null, count: 0, histogram: {} };
+  if (!filmSlug || !username) return { ratings: [], avg: null, count: 0, histogram: {}, userRating: null };
   try {
     const allRatings = [];
     let page = 1;
@@ -316,6 +317,25 @@ async function scrapeFriendsRatings(filmSlug, username) {
       page++;
     }
 
+    // Scrape the user's own rating from the film page
+    let userRating = null;
+    try {
+      const filmRes = await fetch(`https://letterboxd.com/film/${filmSlug}/`, { credentials: "include" });
+      if (filmRes.ok) {
+        const filmHtml = await filmRes.text();
+        // data-owner-rating is on the film poster container and reflects the logged-in user's rating
+        // It's a value 1-10 (half-stars: 1=½, 2=★, 3=★½, ... 8=★★★★, 10=★★★★★)
+        const ownRatingMatch = filmHtml.match(/data-owner-rating="(\d{1,2})"/);
+        if (ownRatingMatch) {
+          const v = parseInt(ownRatingMatch[1], 10);
+          if (v >= 1 && v <= 10) {
+            userRating = v / 2;
+            console.log("LBE: scraped user rating from film page:", v, "→", userRating);
+          }
+        }
+      }
+    } catch (e) { console.log("LBE: couldn't scrape user rating", e); }
+
     // Build histogram (0.5 to 5.0 in 0.5 steps)
     const histogram = {};
     for (let i = 1; i <= 10; i++) histogram[i / 2] = 0;
@@ -324,11 +344,11 @@ async function scrapeFriendsRatings(filmSlug, username) {
     const count = allRatings.length;
     const avg = count > 0 ? (allRatings.reduce((a, b) => a + b, 0) / count) : null;
 
-    console.log("LBE: friends ratings", filmSlug, "count:", count, "avg:", avg?.toFixed(2), "histogram:", JSON.stringify(histogram));
-    return { ratings: allRatings, avg, count, histogram };
+    console.log("LBE: friends ratings", filmSlug, "count:", count, "avg:", avg?.toFixed(2), "userRating:", userRating, "histogram:", JSON.stringify(histogram));
+    return { ratings: allRatings, avg, count, histogram, userRating };
   } catch (e) {
     console.error("LBE: friends ratings error", e);
-    return { ratings: [], avg: null, count: 0, histogram: {} };
+    return { ratings: [], avg: null, count: 0, histogram: {}, userRating: null };
   }
 }
 
@@ -421,7 +441,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const { filmSlug, username } = msg;
     (async () => {
       try {
-        const result = await cached(`friends:v3:${username}:${filmSlug}`, () => scrapeFriendsRatings(filmSlug, username));
+        const result = await cached(`friends:v5:${username}:${filmSlug}`, () => scrapeFriendsRatings(filmSlug, username));
         sendResponse(result);
       } catch (err) {
         sendResponse({ ratings: [], avg: null, count: 0 });

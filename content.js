@@ -8,13 +8,74 @@
   let _username = null;
   function getUsername() {
     if (_username) return _username;
-    const el = document.querySelector('.main-nav .subnav-trigger');
-    if (el) _username = el.textContent.trim().toLowerCase();
+    // Try multiple nav selectors
+    const selectors = [
+      '.main-nav .subnav-trigger',
+      '.main-nav .dropdown-trigger',
+      'nav .subnav-trigger',
+      '.nav-account .name',
+      '.header .subnav-trigger',
+      // The profile link in the nav dropdown
+      '.main-nav a[href*="/films/"]',
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        // For links, extract from href
+        if (el.tagName === 'A' && el.href) {
+          const m = el.getAttribute("href").match(/^\/([a-z0-9_]+)\//i);
+          if (m) { _username = m[1].toLowerCase(); return _username; }
+        }
+        const text = el.textContent.trim().toLowerCase();
+        if (text && text.length > 0 && text.length < 30) {
+          _username = text;
+          return _username;
+        }
+      }
+    }
+    // Try "Reply as Username..." placeholder text
+    const replyBox = document.querySelector('textarea[placeholder*="Reply as"]');
+    if (replyBox) {
+      const m = replyBox.placeholder.match(/Reply as (\w+)/i);
+      if (m) { _username = m[1].toLowerCase(); return _username; }
+    }
     return _username;
   }
 
   function slugFromUrl(url) { const m = (url || "").match(/\/film\/([^/?#]+)/); return m ? m[1] : null; }
   function isFilmPage() { return /^\/film\/[^/]+\/?$/.test(location.pathname); }
+
+  // Review/user-film pages: /username/film/slug/ (viewing a review or user's film activity)
+  function isReviewPage() {
+    if (isFilmPage()) return false;
+    // URL pattern: /username/film/slug/
+    if (/^\/[^/]+\/film\/[^/]+\/?$/.test(location.pathname)) return true;
+    // DOM fallback: page has review content + sidebar
+    return !!(document.querySelector(".review, .review-detail, .viewing-poster, [data-film-slug]") ||
+              (document.querySelector(".sidebar") && document.querySelector('a[href*="/film/"]') && document.querySelector(".body-text, .review-body")));
+  }
+
+  function getFilmSlugFromReviewPage() {
+    // Try URL first: /username/film/slug/
+    const urlMatch = location.pathname.match(/^\/[^/]+\/film\/([^/?#]+)/);
+    if (urlMatch) return urlMatch[1];
+    // Try data attribute
+    const el = document.querySelector('[data-film-slug]');
+    if (el) return el.dataset.filmSlug;
+    // Try the film poster link
+    const posterLink = document.querySelector('.film-poster a[href*="/film/"], .poster a[href*="/film/"], a.film-poster[href*="/film/"]');
+    if (posterLink) return slugFromUrl(posterLink.getAttribute("href"));
+    // Try any link to /film/ in the header area
+    const filmLink = document.querySelector('h1 a[href*="/film/"], .headline-1 a[href*="/film/"], .film-title a[href*="/film/"]');
+    if (filmLink) return slugFromUrl(filmLink.getAttribute("href"));
+    // Try the body-level data attribute
+    const body = document.querySelector('body[data-film-slug], #content[data-film-slug]');
+    if (body) return body.dataset.filmSlug;
+    // Fallback: look for any /film/ link on the page
+    const anyFilmLink = document.querySelector('a[href*="/film/"]');
+    if (anyFilmLink) return slugFromUrl(anyFilmLink.getAttribute("href"));
+    return null;
+  }
 
   function getPageIds() {
     let tmdbId = null, imdbId = null;
@@ -216,13 +277,25 @@
   }
 
   // ── Friends Histogram Builder ──────────────────────────────────
-  function buildFriendsHistogram(data) {
+  function buildFriendsHistogram(data, userRating = null) {
     const panel = document.createElement("div");
     panel.className = "lbe-fh";
 
-    const histogramValues = Object.values(data.histogram || {});
+    const histogram = { ...data.histogram };
+    let totalCount = data.count;
+    let totalSum = data.ratings ? data.ratings.reduce((a, b) => a + b, 0) : (data.avg || 0) * data.count;
+
+    // Include user's own rating
+    const hasUser = userRating && userRating >= 0.5 && userRating <= 5;
+    if (hasUser) {
+      if (histogram[userRating] !== undefined) histogram[userRating]++;
+      totalCount++;
+      totalSum += userRating;
+    }
+
+    const histogramValues = Object.values(histogram);
     const maxCount = Math.max(...histogramValues, 1);
-    const avg = data.avg ? data.avg.toFixed(1) : "—";
+    const avg = totalCount > 0 ? (totalSum / totalCount).toFixed(1) : "—";
 
     const starLabel = (rating) => {
       const full = Math.floor(rating);
@@ -233,17 +306,21 @@
     let barsHTML = "";
     for (let i = 1; i <= 10; i++) {
       const rating = i / 2;
-      const count = data.histogram[rating] || 0;
+      const count = histogram[rating] || 0;
       const pctOfMax = Math.round((count / maxCount) * 100);
-      const pctOfTotal = data.count ? Math.round((count / data.count) * 100) : 0;
+      const pctOfTotal = totalCount ? Math.round((count / totalCount) * 100) : 0;
       const tip = `${count.toLocaleString()} ${starLabel(rating)} rating${count === 1 ? "" : "s"} (${pctOfTotal}%)`;
       barsHTML += `<div class="lbe-fh-bar-wrap" tabindex="0" aria-label="${tip}" data-tip="${tip}"><div class="lbe-fh-bar" style="height:${Math.max(pctOfMax, 6)}%"></div></div>`;
     }
 
+    const countLabel = hasUser
+      ? `YOU + ${data.count.toLocaleString()} ${data.count === 1 ? "FRIEND" : "FRIENDS"}`
+      : `${data.count.toLocaleString()} ${data.count === 1 ? "FRIEND" : "FRIENDS"}`;
+
     panel.innerHTML = `
       <div class="lbe-fh-header">
         <span class="lbe-fh-label">FRIENDS RATINGS</span>
-        <span class="lbe-fh-count">${data.count.toLocaleString()} ${data.count === 1 ? "FRIEND" : "FRIENDS"}</span>
+        <span class="lbe-fh-count">${countLabel}</span>
       </div>
       <div class="lbe-fh-main">
         <div class="lbe-fh-chart">
@@ -255,7 +332,7 @@
         </div>
         <div class="lbe-fh-avg">
           <span class="lbe-fh-avg-val">${avg}</span>
-          <span class="lbe-fh-avg-stars">${stars(data.avg || 0, 10)}</span>
+          <span class="lbe-fh-avg-stars">${stars(totalCount > 0 ? totalSum / totalCount : 0, 10)}</span>
         </div>
       </div>
     `;
@@ -537,6 +614,70 @@
     });
   }
 
+  // ── Review page: friends histogram above "YOUR FRIENDS" ──────
+  let _reviewHistoInjected = false;
+  async function injectReviewPageHistogram() {
+    if (_reviewHistoInjected) return;
+
+    const sb = document.querySelector(".sidebar");
+    if (!sb) { console.log("LBE: review page — no sidebar found"); return; }
+    if (sb.querySelector(".lbe-fh")) { _reviewHistoInjected = true; return; }
+
+    _reviewHistoInjected = true; // set early to prevent re-entry from MutationObserver
+
+    const filmSlug = getFilmSlugFromReviewPage();
+    if (!filmSlug) { console.log("LBE: review page — couldn't find film slug"); _reviewHistoInjected = false; return; }
+
+    // Always use the logged-in user's username (from nav), NOT the URL author
+    let username = getUsername();
+    if (!username) {
+      // Last resort: if we're on our OWN review page, the URL username is ours
+      // But we can't be sure, so log a warning
+      const m = location.pathname.match(/^\/([^/]+)\/film\//);
+      if (m) {
+        username = m[1].toLowerCase();
+        console.log("LBE: review page — using URL username as fallback:", username);
+      }
+    }
+    if (!username) { console.log("LBE: review page — couldn't find username"); _reviewHistoInjected = false; return; }
+
+    console.log("LBE: review page — fetching friends histogram for", filmSlug, "user:", username);
+
+    try {
+      const fr = await chrome.runtime.sendMessage({ type: "FETCH_FRIENDS_RATINGS", filmSlug, username });
+      console.log("LBE: review page — friends data:", fr);
+      if (!fr || fr.count <= 0) return;
+
+      const fPanel = buildFriendsHistogram(fr);
+
+      // Final guard before inserting into DOM
+      if (sb.querySelector(".lbe-fh")) return;
+
+      // Simple consistent placement: insert right AFTER the "YOUR FRIENDS" section
+      let inserted = false;
+      const allH2s = sb.querySelectorAll("h2");
+      for (const h of allH2s) {
+        if (/your\s+friends/i.test(h.textContent)) {
+          const section = h.closest("section") || h.parentElement;
+          // Insert after this section
+          if (section && section.nextSibling) {
+            section.parentElement.insertBefore(fPanel, section.nextSibling);
+          } else if (section && section.parentElement) {
+            section.parentElement.appendChild(fPanel);
+          }
+          inserted = true;
+          break;
+        }
+      }
+
+      if (!inserted) {
+        sb.appendChild(fPanel);
+      }
+
+      console.log("LBE: review page — histogram injected");
+    } catch (e) { console.error("LBE: review page histogram error", e); }
+  }
+
   // ── Init ───────────────────────────────────────────────────────
   function init() {
     chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true }, s => {
@@ -547,6 +688,8 @@
           if (s.togglePoster) injectPoster(info);
           if (s.toggleRatings || s.toggleFriendsHisto) injectSidebar(info, s.toggleFriendsHisto);
         }
+      } else if (s.toggleFriendsHisto && isReviewPage()) {
+        injectReviewPageHistogram();
       }
       if (s.togglePoster) setupGrids();
       if (s.toggleListProgress) scanListProgress();
@@ -558,8 +701,15 @@
 
   let last = location.href;
   new MutationObserver(debounce(() => {
-    if (location.href !== last) { last = location.href; setTimeout(init, 500); }
+    if (location.href !== last) {
+      last = location.href;
+      _reviewHistoInjected = false;
+      setTimeout(init, 500);
+      return;
+    }
     setupGrids();
-    chrome.storage.sync.get({ toggleListProgress: true }, s => { if (s.toggleListProgress) scanListProgress(); });
-  }, 200)).observe(document.body, { childList: true, subtree: true });
+    chrome.storage.sync.get({ toggleListProgress: true }, s => {
+      if (s.toggleListProgress) scanListProgress();
+    });
+  }, 300)).observe(document.body, { childList: true, subtree: true });
 })();
