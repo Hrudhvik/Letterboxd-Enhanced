@@ -23,11 +23,11 @@ chrome.storage.onChanged.addListener((c, a) => { if (a === "sync") { if (c.omdbK
 // ── Cache ────────────────────────────────────────────────────────
 async function getLocal(user, slug) {
   if (!user || !slug) return null;
-  try { const s = await chrome.storage.local.get(`lbe4:${user}:${slug}`); return s[`lbe4:${user}:${slug}`] || null; } catch (e) { return null; }
+  try { const s = await chrome.storage.local.get(`lbe5:${user}:${slug}`); return s[`lbe5:${user}:${slug}`] || null; } catch (e) { return null; }
 }
 async function setLocal(user, slug, data) {
   if (!user || !slug) return;
-  try { await chrome.storage.local.set({ [`lbe4:${user}:${slug}`]: { ...data, ts: Date.now() } }); } catch (e) {}
+  try { await chrome.storage.local.set({ [`lbe5:${user}:${slug}`]: { ...data, ts: Date.now() } }); } catch (e) {}
 }
 const mem = new Map(), TTL = 86400000;
 async function cached(key, fn) {
@@ -44,21 +44,25 @@ async function cached(key, fn) {
 // This is how Letterboxd-Extras does it for grid posters
 // ══════════════════════════════════════════════════════════════════
 async function scrapeLetterboxdPage(filmSlug) {
-  if (!filmSlug) return { tmdbId: null, imdbId: null, genres: [], runtime: null, contentRating: null };
+  if (!filmSlug) return { tmdbId: null, imdbId: null, tmdbType: null, genres: [], runtime: null, contentRating: null, originalTitle: null };
   try {
     const url = `https://letterboxd.com/film/${filmSlug}/`;
     console.log("LBE: scraping", url);
     const res = await fetch(url);
     const html = await res.text();
 
-    let tmdbId = null, imdbId = null;
+    let tmdbId = null, imdbId = null, tmdbType = null;
 
     // IDs via regex (these are reliable — simple patterns)
     const tmdbMatch = html.match(/data-tmdb-id="(\d+)"/);
-    if (tmdbMatch) tmdbId = tmdbMatch[1];
+    if (tmdbMatch) {
+      tmdbId = tmdbMatch[1];
+      const typeMatch = html.match(/data-tmdb-type="([^"]+)"/);
+      if (typeMatch) tmdbType = typeMatch[1];
+    }
     const imdbMatch = html.match(/imdb\.com\/title\/(tt\d+)/);
     if (imdbMatch) imdbId = imdbMatch[1];
-    if (!tmdbId) { const m = html.match(/themoviedb\.org\/movie\/(\d+)/); if (m) tmdbId = m[1]; }
+    if (!tmdbId) { const m = html.match(/themoviedb\.org\/(movie|tv)\/(\d+)/); if (m) { tmdbType = m[1]; tmdbId = m[2]; } }
 
     // Extract genres via regex
     // Letterboxd HTML pattern: <a class="text-slug" href="/films/genre/action/">Action</a>
@@ -84,6 +88,20 @@ async function scrapeLetterboxdPage(filmSlug) {
     }
 
     // Content rating — <a href="/films/rated/r/">R</a> or /rated/pg-13/
+    // Original title
+    let originalTitle = null;
+    const otMatch = html.match(/<em[^>]*class="[^"]*originalTitle[^"]*"[^>]*>([^<]+)<\/em>/i);
+      if (otMatch) {
+         originalTitle = otMatch[1].trim();
+      }
+      if (!originalTitle) {
+        const altRe = /<h3><span>Alternative Titles<\/span><\/h3>\s*<div[^>]*>\s*<p>(.*?)<\/p>/is;
+        const otMatchAlt = html.match(altRe);
+        if (otMatchAlt) {
+           originalTitle = otMatchAlt[1].split(',')[0].trim();
+        }
+      }
+
     let contentRating = null;
     const ratedRe = /href="\/films\/rated\/([^"]+)"[^>]*>([^<]+)<\/a>/g;
     let rm;
@@ -95,8 +113,8 @@ async function scrapeLetterboxdPage(filmSlug) {
       }
     }
 
-    console.log("LBE: scraped", filmSlug, "→ tmdb:", tmdbId, "imdb:", imdbId, "genres:", genres, "runtime:", runtime, "rated:", contentRating);
-    return { tmdbId, imdbId, genres, runtime, contentRating };
+    console.log("LBE: scraped", filmSlug, "→ tmdb:", tmdbId, "imdb:", imdbId, "genres:", genres, "runtime:", runtime, "rated:", contentRating, "originalTitle:", originalTitle);
+    return { tmdbId, imdbId, tmdbType, genres, runtime, contentRating, originalTitle };
   } catch (e) {
     console.error("LBE: scrape error", filmSlug, e);
     return { tmdbId: null, imdbId: null, genres: [], runtime: null, contentRating: null };
@@ -104,14 +122,14 @@ async function scrapeLetterboxdPage(filmSlug) {
 }
 
 // ── TMDB by ID ───────────────────────────────────────────────────
-async function tmdbById(tmdbId) {
+async function tmdbById(tmdbId, tmdbType = "movie") {
   if (!TMDB_API_KEY || !tmdbId) return null;
   try {
-    const r = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`);
+    const r = await fetch(`https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`);
     const d = await r.json();
     if (d.success === false) return null;
-    console.log("LBE: TMDB", tmdbId, "→", d.title, "imdb:", d.imdb_id || d.external_ids?.imdb_id);
-    const mins = parseInt(d.runtime);
+    console.log("LBE: TMDB", tmdbId, "type:", tmdbType, "→", d.title, "imdb:", d.imdb_id || d.external_ids?.imdb_id);
+    const mins = d.runtime ? parseInt(d.runtime) : (d.episode_run_time?.length ? parseInt(d.episode_run_time[0]) : 0);
     const runtime = mins > 0
       ? `${Math.floor(mins / 60)}h ${mins % 60}min`.replace(/^0h\s*/, "")
       : null;
@@ -121,7 +139,7 @@ async function tmdbById(tmdbId) {
       imdbId: d.imdb_id || d.external_ids?.imdb_id || null,
       genres: (d.genres || []).map(g => g.name),
       runtime,
-      originalTitle: d.original_title || null,
+      originalTitle: d.original_title || d.original_name || null,
       originalLanguage: d.original_language || null,
     };
   } catch (e) { return null; }
@@ -199,7 +217,7 @@ async function fetchMAL(title, originalTitle, year) {
 
 async function malSearch(query, englishTitle, originalTitle, year) {
   try {
-    const p = new URLSearchParams({ q: query, type: "movie", limit: 10 });
+    const p = new URLSearchParams({ q: query, limit: 10 });
     const r = await fetch(`https://api.jikan.moe/v4/anime?${p}`);
     const d = await r.json();
     if (!d.data?.length) return null;
@@ -353,7 +371,100 @@ async function scrapeFriendsRatings(filmSlug, username) {
 }
 
 // ── Combined fetch ───────────────────────────────────────────────
-async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug) {
+
+// -- WikiData ------------------------------------------------------------------
+async function getWikiDataIds(imdbId, tmdbId, tmdbType) {
+  if (!imdbId && !tmdbId) return {};
+  const t = tmdbType === "tv" ? "wdt:P4983" : "wdt:P4947";
+  
+  let q = `SELECT ?rt ?mc ?al ?mal WHERE { `;
+  const conditions = [];
+  if (imdbId) conditions.push(`{ ?item wdt:P345 "${imdbId}" }`);
+  if (tmdbId) conditions.push(`{ ?item ${t} "${tmdbId}" }`);
+  
+  q += conditions.join(" UNION ");
+  q += `
+    OPTIONAL { ?item wdt:P1258 ?rt. }
+    OPTIONAL { ?item wdt:P1712 ?mc. }
+    OPTIONAL { ?item wdt:P8729 ?al. }
+    OPTIONAL { ?item wdt:P4086 ?mal. }
+  } LIMIT 1`;
+  
+  try {
+    const url = "https://query.wikidata.org/sparql?query=" + encodeURIComponent(q);
+    const r = await fetch(url, { headers: { "Accept": "application/sparql-results+json", "User-Agent": "Letterboxd-Enhanced (hruday@example.com)" } });
+    if (!r.ok) return {};
+    const d = await r.json();
+    const b = d.results?.bindings?.[0];
+    if (!b) return {};
+    return {
+      rtId: b.rt?.value || null,
+      mcId: b.mc?.value || null,
+      alId: b.al?.value || null,
+      malId: b.mal?.value || null
+    };
+  } catch (e) { return {}; }
+}
+
+async function fetchRT(rtId) {
+  if (!rtId) return null;
+  try {
+    const url = "https://www.rottentomatoes.com/" + rtId;
+    const res = await fetch(url);
+    const html = await res.text();
+    const match = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/gs);
+    if (match) {
+      for (const m of match) {
+        if (m.includes("AggregateRating") && m.includes("Tomatometer")) {
+          const j = JSON.parse(m.replace(/<[^>]+>/g, ""));
+          if (j.aggregateRating?.ratingValue) {
+            return { score: j.aggregateRating.ratingValue + "%", url };
+          }
+        }
+      }
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+async function fetchMC(mcId) {
+  if (!mcId) return null;
+  let t = mcId;
+  if (!t.startsWith("movie/") && !t.startsWith("tv/")) t = "movie/" + t;
+  try {
+    const url = "https://www.metacritic.com/" + t;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const html = await res.text();
+    const match = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/gs);
+    if (match) {
+      for (const m of match) {
+        if (m.includes("AggregateRating") && m.includes("Metascore")) {
+          const str = m.replace(/<script[^>]*>|<\/script>/g, "").trim();
+          const j = JSON.parse(str);
+          if (j.aggregateRating?.ratingValue) {
+            return { score: j.aggregateRating.ratingValue.toString(), url };
+          }
+        }
+      }
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+async function fetchMalDirect(malId) {
+  if (!malId) return null;
+  try {
+    const r = await fetch("https://api.jikan.moe/v4/anime/" + malId);
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d.data?.score) {
+      return { score: d.data.score.toFixed(1), url: d.data.url, members: d.data.members };
+    }
+  } catch (e) { return null; }
+}
+
+async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug, tmdbType = "movie") {
   console.log("LBE: fetch", title, year, "tmdb:", tmdbId, "imdb:", imdbId, "slug:", filmSlug);
 
   // Step 0: Scrape the Letterboxd film page whenever we have a slug.
@@ -361,14 +472,14 @@ async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug) {
   let scrapedData = null;
   if (filmSlug) {
     scrapedData = await cached(`scrape:v2:${filmSlug}`, () => scrapeLetterboxdPage(filmSlug));
-    if (!tmdbId && scrapedData.tmdbId) tmdbId = scrapedData.tmdbId;
+    if (!tmdbId && scrapedData.tmdbId) { tmdbId = scrapedData.tmdbId; tmdbType = scrapedData.tmdbType || tmdbType; } else if (scrapedData.tmdbType) { tmdbType = scrapedData.tmdbType; }
     if (!imdbId && scrapedData.imdbId) imdbId = scrapedData.imdbId;
   }
 
   // Step 1: TMDB
   let tmdb = null;
   if (tmdbId) {
-    tmdb = await cached(`tmdb:${tmdbId}`, () => tmdbById(tmdbId));
+    tmdb = await cached(`tmdb:${tmdbType}:${tmdbId}`, () => tmdbById(tmdbId, tmdbType));
   } else if (title) {
     tmdb = await cached(`tmdb:s:${title}|${year}`, () => tmdbByTitle(title, year));
   }
@@ -382,24 +493,64 @@ async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug) {
     omdb = await cached(`omdb:${resolvedImdbId}`, () => omdbById(resolvedImdbId));
   }
 
-  // Step 4: MAL — any animation (Japanese, Chinese donghua, Korean, etc.)
+  // Step 4: Wikidata IDs
+  const wiki = await cached(`wiki:${resolvedImdbId}|${tmdbId}`, () => getWikiDataIds(resolvedImdbId, tmdbId, tmdbType));
+
+// Step 5: Fetch RT & MC directly with guessing fallback if no WD ID
+    const guessRT = async (id, t, y, type) => {
+      let r = id ? await cached(`rt:id:${id}`, () => fetchRT(id)) : null;
+      if (r) return r;
+      if (!t) return null;
+      const c = t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9\s\-:]/g,"").replace(/[:\-]/g, " ").trim().replace(/\s+/g,"_");
+      if (!c) return null;
+      for (const u of [type === "tv" ? `tv/${c}` : `m/${c}`, type === "tv" ? `tv/${c}_${y}` : `m/${c}_${y}`]) {
+        r = await cached(`rt:id:${u}`, () => fetchRT(u));
+        if (r) return r;
+      }
+      return null;
+    };
+
+    const guessMC = async (id, t, y, type) => {
+      let r = id ? await cached(`mc:id:${id}`, () => fetchMC(id)) : null;
+      if (r) return r;
+      if (!t) return null;
+      const c = t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9\s\-:]/g,"").replace(/[:\-]/g, " ").trim().replace(/\s+/g,"-");
+      if (!c) return null;
+      for (const u of [type === "tv" ? `tv/${c}` : `movie/${c}`, type === "tv" ? `tv/${c}-${y}` : `movie/${c}-${y}`]) {
+        r = await cached(`mc:id:${u}`, () => fetchMC(u));
+        if (r) return r;
+      }
+      return null;
+    };
+
+    const [rtScraped, mcScraped] = await Promise.all([
+      guessRT(wiki.rtId, title, year, tmdbType || initialTmdbType),
+      guessMC(wiki.mcId, title, year, tmdbType || initialTmdbType)
+  ]);
+
+  // Step 6: MAL
   let mal = null;
-  const isAnimation = tmdb?.genres?.some(g => /animation/i.test(g));
+  const isAnimation = tmdb?.genres?.some(g => /animation/i.test(g)) || tmdbType === "tv"; 
   if (isAnimation) {
-    mal = await cached(`mal:v3:${title}|${year}`, () => fetchMAL(title, tmdb?.originalTitle, year));
+    if (wiki.malId) {
+      mal = await cached(`mal:direct:${wiki.malId}`, () => fetchMalDirect(wiki.malId));
+    }
+    if (!mal) {
+      mal = await cached(`mal:v3:${title}|${year}`, () => fetchMAL(title, scrapedData?.originalTitle || tmdb?.originalTitle, year));
+    }
   }
 
   const result = {
     imdb: omdb?.imdb || null,
-    rt: omdb?.rt || null,
-    mc: omdb?.mc || null,
+    rt: rtScraped || omdb?.rt || null,
+    mc: mcScraped || omdb?.mc || null,
     mal: mal,
-    // Extra info for grid/info cards.
-    // Prefer Letterboxd scrape for genres/content rating, then fall back to TMDB runtime/genres.
     genres: scrapedData?.genres?.length ? scrapedData.genres : (tmdb?.genres || []),
     runtime: scrapedData?.runtime || tmdb?.runtime || null,
     contentRating: scrapedData?.contentRating || null,
   };
+
+  
 
   // Fallback: TMDB rating if no OMDb IMDb score
   if (!result.imdb && tmdb?.tmdbRating && tmdb.tmdbRating !== "0.0") {
@@ -417,7 +568,7 @@ async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug) {
 // ── Message handler ──────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "FETCH_RATINGS") {
-    const { title, year, username, filmSlug, tmdbId, imdbId } = msg;
+    const { title, year, username, filmSlug, tmdbId, imdbId, tmdbType } = msg;
     (async () => {
       const local = await getLocal(username, filmSlug);
       if (local && local.imdb !== undefined) {
@@ -425,7 +576,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       try {
-        const result = await fetchAllRatings(title, year, tmdbId, imdbId, filmSlug);
+        const result = await fetchAllRatings(title, year, tmdbId, imdbId, filmSlug, tmdbType);
         if (username && filmSlug) await setLocal(username, filmSlug, result);
         sendResponse({ ...result, error: null, cached: false });
       } catch (err) {
@@ -459,3 +610,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 });
+

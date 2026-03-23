@@ -75,13 +75,16 @@
   }
 
   function getPageIds() {
-    let tmdbId = null, imdbId = null;
+    let tmdbId = null, imdbId = null, tmdbType = "movie";
     const tmdbEl = document.querySelector('[data-tmdb-id]');
-    if (tmdbEl) tmdbId = tmdbEl.dataset.tmdbId;
+    if (tmdbEl) {
+      tmdbId = tmdbEl.dataset.tmdbId;
+      if (tmdbEl.dataset.tmdbType) tmdbType = tmdbEl.dataset.tmdbType;
+    }
     const imdbLink = document.querySelector('a[href*="imdb.com/title/"]');
     if (imdbLink) { const m = imdbLink.href.match(/title\/(tt\d+)/); if (m) imdbId = m[1]; }
-    if (!tmdbId) { const tmdbLink = document.querySelector('a[href*="themoviedb.org/movie/"]'); if (tmdbLink) { const m = tmdbLink.href.match(/movie\/(\d+)/); if (m) tmdbId = m[1]; } }
-    return { tmdbId, imdbId };
+    if (!tmdbId) { const tmdbLink = document.querySelector('a[href*="themoviedb.org/"]'); if (tmdbLink) { const m = tmdbLink.href.match(/(movie|tv)\/(\d+)/); if (m) { tmdbType = m[1]; tmdbId = m[2]; } } }
+    return { tmdbId, imdbId, tmdbType };
   }
 
   function getFilmInfo() {
@@ -112,7 +115,7 @@
     const lbEl = document.querySelector('.average-rating');
     if (lbEl) { const p = parseFloat(lbEl.textContent); if (!isNaN(p)) lbRating = p; }
     const ids = getPageIds();
-    return { title, year, runtime, genres, contentRating, lbRating, filmSlug: slugFromUrl(location.pathname), tmdbId: ids.tmdbId, imdbId: ids.imdbId };
+    return { title, year, runtime, genres, contentRating, lbRating, filmSlug: slugFromUrl(location.pathname), tmdbId: ids.tmdbId, imdbId: ids.imdbId, tmdbType: ids.tmdbType };
   }
 
   function getGridInfo(el) {
@@ -122,7 +125,8 @@
     const year = el.dataset?.filmReleaseYear || null;
     const r = el.dataset?.averageRating;
     const tmdbId = el.dataset?.tmdbId || el.querySelector('[data-tmdb-id]')?.dataset?.tmdbId || null;
-    return { title, year, runtime: null, genres: [], contentRating: null, lbRating: r ? parseFloat(r) : null, filmSlug: slug, tmdbId, imdbId: null };
+    const tmdbType = el.dataset?.tmdbType || el.querySelector('[data-tmdb-type]')?.dataset?.tmdbType || "movie";
+    return { title, year, runtime: null, genres: [], contentRating: null, lbRating: r ? parseFloat(r) : null, filmSlug: slug, tmdbId, tmdbType, imdbId: null };
   }
 
   // ── Stars ──────────────────────────────────────────────────────
@@ -229,7 +233,7 @@
     return chrome.runtime.sendMessage({
       type: "FETCH_RATINGS", title: info.title, year: info.year,
       username: getUsername(), filmSlug: info.filmSlug,
-      tmdbId: info.tmdbId || null, imdbId: info.imdbId || null,
+      tmdbId: info.tmdbId || null, imdbId: info.imdbId || null, tmdbType: info.tmdbType || "movie",
     });
   }
 

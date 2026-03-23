@@ -346,3 +346,20 @@
   margin-left: 6px;
   color: #9ab;
 }
+
+/* LBE Description (Info Card) */
+.lbe-ic-desc {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #c9d1d9;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+  padding: 0 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 8px;
+}

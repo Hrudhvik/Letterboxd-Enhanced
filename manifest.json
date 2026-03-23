@@ -11,7 +11,10 @@
     "https://letterboxd.com/*",
     "https://www.omdbapi.com/*",
     "https://api.jikan.moe/*",
-    "https://api.themoviedb.org/*"
+    "https://api.themoviedb.org/*",
+    "https://query.wikidata.org/*",
+    "https://www.rottentomatoes.com/*",
+    "https://www.metacritic.com/*"
   ],
   "content_scripts": [
     {
