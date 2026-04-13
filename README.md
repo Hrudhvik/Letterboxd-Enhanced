@@ -58,6 +58,9 @@ All views include:
 <img width="1919" height="977" alt="image" src="https://github.com/user-attachments/assets/4662a1fd-88e8-4a6f-84b8-3d3830e92c54" />
 <img width="610" height="356" alt="image" src="https://github.com/user-attachments/assets/df5e131c-b63a-44a7-8076-ac875c73eba5" />
 <img width="1415" height="330" alt="image" src="https://github.com/user-attachments/assets/6d66036b-cda1-49f9-8213-ea6c4916ef30" />
+<img width="1919" height="983" alt="image" src="https://github.com/user-attachments/assets/859e3a01-abda-4c76-8769-163cefa53f96" />
+<img width="1919" height="982" alt="image" src="https://github.com/user-attachments/assets/bc348687-8eae-4fc2-b4fc-3073a5616c40" />
+<img width="1919" height="984" alt="image" src="https://github.com/user-attachments/assets/3dbe0500-9c29-43ac-b5af-0156af3ea863" />
 
 ---
 
