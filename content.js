@@ -679,9 +679,356 @@
     } catch (e) { console.error("LBE: review page histogram error", e); }
   }
 
+  // ── Diary Stats ─────────────────────────────────────────────────
+  function isDiaryPage() {
+    return /^\/[^/]+\/diary(\/|$)/.test(location.pathname);
+  }
+
+  function getDiaryUsername() {
+    const m = location.pathname.match(/^\/([^/]+)\/diary/);
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  let _diaryStatsInjected = false;
+  let _diaryExpandedMonth = null;
+
+  async function injectDiaryStats() {
+    if (_diaryStatsInjected) return;
+    if (document.querySelector(".lbe-ds")) { _diaryStatsInjected = true; return; }
+    _diaryStatsInjected = true;
+
+    const username = getDiaryUsername();
+    console.log("LBE: diary stats — detected diary page, username:", username);
+    if (!username) return;
+
+    const currentYear = new Date().getFullYear();
+    let year = currentYear;
+
+    // Try to detect year from URL: /username/diary/for/2025/
+    const ym = location.pathname.match(/\/diary\/for\/(\d{4})/);
+    if (ym) year = parseInt(ym[1], 10);
+    console.log("LBE: diary stats — year:", year);
+
+    // Create container
+    const container = document.createElement("div");
+    container.className = "lbe-ds";
+    container.innerHTML = buildDiaryStatsLoading(year);
+
+    // Insert into page — try multiple selectors for robustness
+    let inserted = false;
+    const insertTargets = [
+      ".diary-navigation",
+      "nav.sub-nav",
+      ".content-nav",
+      ".diary-filters",
+      "#diary-table",
+      ".diary-table",
+      "table.diary-table",
+      ".pagination",
+    ];
+
+    // Strategy 1: Insert after a navigation element
+    for (const sel of insertTargets.slice(0, 4)) {
+      const el = document.querySelector(sel);
+      if (el) {
+        el.parentElement.insertBefore(container, el.nextSibling);
+        console.log("LBE: diary stats — inserted after", sel);
+        inserted = true;
+        break;
+      }
+    }
+
+    // Strategy 2: Insert before the diary table / entries
+    if (!inserted) {
+      for (const sel of insertTargets.slice(4)) {
+        const el = document.querySelector(sel);
+        if (el) {
+          el.parentElement.insertBefore(container, el);
+          console.log("LBE: diary stats — inserted before", sel);
+          inserted = true;
+          break;
+        }
+      }
+    }
+
+    // Strategy 3: Insert at start of #content or section.s-body
+    if (!inserted) {
+      const fallbacks = ["#content", "section.s-body", ".body-content", "main", ".content-wrap", "body"];
+      for (const sel of fallbacks) {
+        const el = document.querySelector(sel);
+        if (el) {
+          // Try to insert after the first header/nav-like child
+          const firstChild = el.querySelector("header, nav, .content-nav, h1, h2");
+          if (firstChild) {
+            firstChild.parentElement.insertBefore(container, firstChild.nextSibling);
+          } else {
+            el.prepend(container);
+          }
+          console.log("LBE: diary stats — fallback inserted into", sel);
+          inserted = true;
+          break;
+        }
+      }
+    }
+
+    if (!inserted) {
+      console.log("LBE: diary stats — couldn't find insertion point!");
+      return;
+    }
+
+    // Fetch and render
+    await fetchAndRenderDiaryStats(container, username, year);
+
+    // Year navigation handlers
+    container.addEventListener("click", async (e) => {
+      const btn = e.target.closest(".lbe-ds-yr-btn");
+      if (btn) {
+        const dir = btn.dataset.dir;
+        year += dir === "prev" ? -1 : 1;
+        if (year > currentYear) year = currentYear;
+        if (year < 2000) year = 2000;
+        container.innerHTML = buildDiaryStatsLoading(year);
+        _diaryExpandedMonth = null;
+        await fetchAndRenderDiaryStats(container, username, year);
+        return;
+      }
+
+      // Month bar click
+      const bar = e.target.closest(".lbe-ds-col");
+      if (bar) {
+        const mi = parseInt(bar.dataset.month, 10);
+        if (isNaN(mi)) return;
+        if (_diaryExpandedMonth === mi) {
+          _diaryExpandedMonth = null;
+          container.querySelector(".lbe-ds-expand")?.remove();
+          container.querySelectorAll(".lbe-ds-col.lbe-ds-act").forEach(c => c.classList.remove("lbe-ds-act"));
+        } else {
+          _diaryExpandedMonth = mi;
+          container.querySelectorAll(".lbe-ds-col.lbe-ds-act").forEach(c => c.classList.remove("lbe-ds-act"));
+          bar.classList.add("lbe-ds-act");
+          renderMonthExpand(container, mi);
+        }
+        return;
+      }
+
+      // Toggle view (Monthly / Weekly / Day)
+      const togBtn = e.target.closest(".lbe-ds-tog-btn");
+      if (togBtn) {
+        const view = togBtn.dataset.view;
+        container.querySelectorAll(".lbe-ds-tog-btn").forEach(b => b.classList.remove("lbe-ds-tog-active"));
+        togBtn.classList.add("lbe-ds-tog-active");
+        container.querySelectorAll(".lbe-ds-view").forEach(v => {
+          v.style.display = v.dataset.viewId === view ? "" : "none";
+        });
+        return;
+      }
+
+      // Refresh button
+      if (e.target.closest(".lbe-ds-refresh")) {
+        await chrome.runtime.sendMessage({ type: "CLEAR_DIARY_CACHE", username, year });
+        container.innerHTML = buildDiaryStatsLoading(year);
+        _diaryExpandedMonth = null;
+        await fetchAndRenderDiaryStats(container, username, year);
+      }
+    });
+  }
+
+  let _lastDiaryStats = null;
+
+  async function fetchAndRenderDiaryStats(container, username, year) {
+    try {
+      console.log("LBE: diary stats — fetching for", username, year);
+      const resp = await chrome.runtime.sendMessage({ type: "FETCH_DIARY_STATS", username, year });
+      console.log("LBE: diary stats — response:", resp ? `${resp.entries?.length || 0} entries, cached: ${resp.cached}` : "null");
+      if (!resp || resp.error || !resp.stats) {
+        container.innerHTML = buildDiaryStatsEmpty(year);
+        _lastDiaryStats = null;
+        return;
+      }
+      _lastDiaryStats = resp.stats;
+      container.innerHTML = buildDiaryStatsHTML(resp.stats, year);
+    } catch (e) {
+      console.error("LBE: diary stats render error", e);
+      container.innerHTML = buildDiaryStatsEmpty(year);
+    }
+  }
+
+  function buildDiaryStatsLoading(year) {
+    return `<div class="lbe-ds-hdr"><span class="lbe-ds-ttl">DIARY STATS</span><div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div></div>
+      <div class="lbe-ds-loading"><div class="lbe-ds-spinner"></div><span>Scanning diary pages...</span></div>`;
+  }
+
+  function buildDiaryStatsEmpty(year) {
+    return `<div class="lbe-ds-hdr"><span class="lbe-ds-ttl">DIARY STATS</span><div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div></div>
+      <div class="lbe-ds-empty">No diary entries found for ${year}</div>`;
+  }
+
+  function buildDiaryStatsHTML(stats, year) {
+    const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MONTH_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    const maxMonthTotal = Math.max(...stats.monthly.map(m => m.total), 1);
+
+    // Build bars
+    let barsHTML = "";
+    for (let i = 0; i < 12; i++) {
+      const m = stats.monthly[i];
+      const totalH = Math.round((m.total / maxMonthTotal) * 80);
+      const rwH = m.total > 0 ? Math.max(Math.round((m.rewatchCount / maxMonthTotal) * 80), m.rewatchCount > 0 ? 3 : 0) : 0;
+      const newH = Math.max(totalH - rwH, m.newCount > 0 ? 2 : 0);
+      const rwText = m.rewatchCount === 0 ? "no rewatches" : m.rewatchCount === 1 ? "1 rewatch" : `${m.rewatchCount} rewatches`;
+      const tip = `${MONTH_FULL[i]}: ${m.total} ${m.total === 1 ? "film" : "films"}, ${rwText}`;
+
+      barsHTML += `<div class="lbe-ds-col" data-month="${i}" data-tip="${tip}"><div class="lbe-ds-stk"><div class="lbe-ds-bar-new" style="height:${newH}px"></div>${rwH > 0 ? `<div class="lbe-ds-bar-rw" style="height:${rwH}px"></div>` : ""}</div></div>`;
+    }
+
+    // Labels
+    let labelsHTML = MONTH_SHORT.map(m => `<span>${m}</span>`).join("");
+
+    // Genres
+    let genresHTML = stats.topGenres.map(g => `<span class="lbe-ds-g">${g.name}<b>${g.count}</b></span>`).join("");
+
+    const avgStr = stats.avgRating !== null ? stats.avgRating.toFixed(1) : "—";
+    const perMonthStr = stats.perMonth.toFixed(1);
+
+    return `<div class="lbe-ds-hdr">
+        <span class="lbe-ds-ttl">DIARY STATS</span>
+        <div class="lbe-ds-yr-wrap">
+          <span class="lbe-ds-refresh" title="Refresh stats">&#8635;</span>
+          <div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div>
+        </div>
+      </div>
+      <div class="lbe-ds-stats">
+        <div><span class="lbe-ds-big">${stats.totalFilms}</span><span class="lbe-ds-unit">films</span></div>
+        <div class="lbe-ds-sep"></div>
+        <div><span class="lbe-ds-v">${avgStr}</span><span class="lbe-ds-unit">avg</span><div class="lbe-ds-sub">${perMonthStr} per month</div></div>
+        <div class="lbe-ds-sep"></div>
+        <div><span class="lbe-ds-v">${stats.rewatchCount}</span><span class="lbe-ds-unit">rewatches</span></div>
+        <div class="lbe-ds-sep"></div>
+        <div><span class="lbe-ds-v">${stats.totalHours}h</span><div class="lbe-ds-sub">total runtime</div></div>
+        <div class="lbe-ds-sep"></div>
+        <div><span class="lbe-ds-v">${stats.likedCount || 0}</span><span class="lbe-ds-unit">liked</span></div>
+        <div class="lbe-ds-sep"></div>
+        <div><span class="lbe-ds-v">${stats.reviewCount}</span><span class="lbe-ds-unit">reviews</span></div>
+      </div>
+      ${genresHTML ? `<div class="lbe-ds-genres">${genresHTML}</div>` : ""}
+      <div class="lbe-ds-toggle">
+        <button class="lbe-ds-tog-btn lbe-ds-tog-active" data-view="monthly">Monthly</button>
+        <button class="lbe-ds-tog-btn" data-view="weekly">Weekly</button>
+        <button class="lbe-ds-tog-btn" data-view="day">Day</button>
+      </div>
+      <div class="lbe-ds-view" data-view-id="monthly">
+        <div class="lbe-ds-bars">${barsHTML}</div>
+        <div class="lbe-ds-lbl">${labelsHTML}</div>
+        <div class="lbe-ds-leg"><span><span class="lbe-ds-dot" style="background:#5a6572"></span>New</span><span><span class="lbe-ds-dot" style="background:#FAC775"></span>Rewatch</span></div>
+      </div>
+      <div class="lbe-ds-view" data-view-id="weekly" style="display:none">
+        ${buildWeeklyHTML(stats, year)}
+      </div>
+      <div class="lbe-ds-view" data-view-id="day" style="display:none">
+        ${buildYearlyDayOfWeekHTML(stats)}
+      </div>`;
+  }
+
+  function buildWeeklyHTML(stats, year) {
+    if (!stats.weekly || stats.weekly.every(w => w === 0)) return "";
+    const max = stats.maxWeekly || 1;
+    const MSHORT = ["Jan", "", "", "Apr", "", "", "Jul", "", "", "Oct", "", ""];
+    let bars = "";
+    for (let w = 0; w < 53; w++) {
+      const count = stats.weekly[w];
+      const h = Math.round((count / max) * 48);
+      const isTop = w === stats.mostWatchedWeekIdx;
+      bars += `<div class="lbe-ds-wk-bar-col${isTop ? " lbe-ds-wk-top" : ""}" style="height:${Math.max(h, count > 0 ? 2 : 0)}px" data-tip="Week ${w + 1}: ${count} ${count === 1 ? "film" : "films"}"></div>`;
+    }
+    const topLabel = stats.maxWeekly > 0
+      ? `<span class="lbe-ds-wkly-peak"><b>${stats.maxWeekly}</b> films · Week ${stats.mostWatchedWeekIdx + 1} · ${stats.mostWatchedWeekRange}</span>`
+      : "";
+    return `<div class="lbe-ds-weekly">
+      <div class="lbe-ds-wkly-hdr"><span class="lbe-ds-wk-ttl">Films by week</span>${topLabel}</div>
+      <div class="lbe-ds-wkly-bars">${bars}</div>
+      <div class="lbe-ds-wkly-lbl"><span>Jan</span><span>Apr</span><span>Jul</span><span>Oct</span><span></span></div>
+    </div>`;
+  }
+
+  function buildYearlyDayOfWeekHTML(stats) {
+    if (!stats.yearlyDayOfWeek) return "";
+    const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    // Reorder from Sun-first to Mon-first for display
+    const reordered = [
+      stats.yearlyDayOfWeek[1], // Mon
+      stats.yearlyDayOfWeek[2], // Tue
+      stats.yearlyDayOfWeek[3], // Wed
+      stats.yearlyDayOfWeek[4], // Thu
+      stats.yearlyDayOfWeek[5], // Fri
+      stats.yearlyDayOfWeek[6], // Sat
+      stats.yearlyDayOfWeek[0], // Sun
+    ];
+    const max = Math.max(...reordered, 1);
+    let bars = "";
+    for (let d = 0; d < 7; d++) {
+      const count = reordered[d];
+      const pct = Math.round((count / max) * 100);
+      const isTop = count === max && count > 0;
+      bars += `<div class="lbe-ds-dow-row">
+        <span class="lbe-ds-dow-day">${DAYS[d]}</span>
+        <div class="lbe-ds-dow-track"><div class="lbe-ds-dow-fill${isTop ? " lbe-ds-dow-top" : ""}" style="width:${Math.max(pct, count > 0 ? 3 : 0)}%"></div></div>
+        ${isTop ? `<span class="lbe-ds-dow-count">${count} Films</span>` : ""}
+      </div>`;
+    }
+    return `<div class="lbe-ds-dow">
+      <div class="lbe-ds-wk-ttl">Most watched day</div>
+      <div class="lbe-ds-dow-chart">${bars}</div>
+    </div>`;
+  }
+
+  function renderMonthExpand(container, monthIdx) {
+    container.querySelector(".lbe-ds-expand")?.remove();
+    if (!_lastDiaryStats) return;
+
+    const m = _lastDiaryStats.monthly[monthIdx];
+    if (!m || m.total === 0) return;
+
+    const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const DAYS_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const maxDay = Math.max(...m.dayOfWeek, 1);
+
+    let barsHTML = "";
+    for (let d = 0; d < 7; d++) {
+      const pct = Math.round((m.dayOfWeek[d] / maxDay) * 100);
+      const filmWord = m.dayOfWeek[d] === 1 ? "film" : "films";
+      barsHTML += `<div class="lbe-ds-wk-c" data-tip="${DAYS_FULL[d]}: ${m.dayOfWeek[d]} ${filmWord}"><div class="lbe-ds-wk-b" style="height:${Math.max(pct, m.dayOfWeek[d] > 0 ? 8 : 4)}%"></div><span class="lbe-ds-wk-l">${DAYS[d]}</span></div>`;
+    }
+
+    const avgStr = m.avgRating !== null ? m.avgRating.toFixed(1) : "—";
+
+    const expand = document.createElement("div");
+    expand.className = "lbe-ds-expand";
+    expand.innerHTML = `
+      <div class="lbe-ds-exp-h"><span><span class="lbe-ds-exp-m">${m.name}</span><span class="lbe-ds-exp-c">${m.total} ${m.total === 1 ? "film" : "films"}</span></span><span class="lbe-ds-exp-arr">&#9660;</span></div>
+      <div class="lbe-ds-exp-body">
+        <div class="lbe-ds-wk-ttl">Day of week</div>
+        <div class="lbe-ds-wk">${barsHTML}</div>
+        <div class="lbe-ds-m-meta">
+          <span>Average rating: <span>${avgStr}</span></span>
+          <span>Most watched: <span>${m.mostWatchedDay || "—"}</span></span>
+          <span>Rewatches: <span>${m.rewatchCount}</span></span>
+          <span>Liked: <span>${m.likedCount || 0}</span></span>
+          <span>Reviews: <span>${m.reviewCount}</span></span>
+        </div>
+      </div>`;
+
+    // Insert inside the monthly view after legend
+    const monthlyView = container.querySelector('[data-view-id="monthly"]');
+    const leg = monthlyView?.querySelector(".lbe-ds-leg");
+    if (leg) leg.after(expand);
+    else if (monthlyView) monthlyView.appendChild(expand);
+    else container.appendChild(expand);
+  }
+
   // ── Init ───────────────────────────────────────────────────────
   function init() {
-    chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true }, s => {
+    chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true, toggleDiaryStats: true }, s => {
       if (isFilmPage()) {
         const info = getFilmInfo();
         if (info) {
@@ -691,6 +1038,9 @@
         }
       } else if (s.toggleFriendsHisto && isReviewPage()) {
         injectReviewPageHistogram();
+      }
+      if (s.toggleDiaryStats && isDiaryPage()) {
+        injectDiaryStats();
       }
       if (s.togglePoster) setupGrids();
       if (s.toggleListProgress) scanListProgress();
@@ -705,6 +1055,9 @@
     if (location.href !== last) {
       last = location.href;
       _reviewHistoInjected = false;
+      _diaryStatsInjected = false;
+      _lastDiaryStats = null;
+      _diaryExpandedMonth = null;
       setTimeout(init, 500);
       return;
     }

@@ -1,6 +1,6 @@
 # 🎬 Letterboxd Enhanced
 
-A Chrome extension that enhances [Letterboxd](https://letterboxd.com/) with external ratings, a poster overlay, rearranged metadata, and friends' rating histograms.
+A Chrome extension that enhances [Letterboxd](https://letterboxd.com/) with external ratings, a poster overlay, rearranged metadata, friends' rating histograms, list progress bars, and diary analytics.
 
 ![Chrome](https://img.shields.io/badge/Chrome-Manifest%20V3-green) ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -30,6 +30,25 @@ Moves runtime, content rating (PG, R, etc.), and genre tags directly under the f
 
 ### 👥 Friends Rating Histogram
 Scrapes your friends' ratings for each film and displays a histogram with average score — similar to Letterboxd's own ratings section but for your friends circle.
+
+### 📈 List Progress Bars
+Shows a progress bar on list cards (activity feed, list pages) indicating how many films you've watched out of the total.
+
+### 📅 Diary Stats
+Adds an analytics panel to any user's diary page with three switchable views:
+
+**Monthly view** — Stacked bar chart showing films watched per month, split by new watches (graphite) and rewatches (gold). Click any month bar to expand a detail card showing day-of-week distribution, average rating, most watched day, rewatches, likes, and reviews for that month.
+
+**Weekly view** — 52-bar histogram showing films watched per week across the year. The peak week is highlighted in blue with a label showing the count, week number, and date range.
+
+**Day of week view** — Horizontal bar chart showing total films watched per day of the week across the year. The peak day is highlighted in blue with a count label.
+
+All views include:
+- Total films, average rating, films per month, rewatch count, total runtime (hours), liked count, review count
+- Top 5 genres with counts
+- Year navigation with ‹ › arrows
+- Refresh button to re-scrape diary data
+- Cached for 1 hour to avoid redundant scraping
 
 ---
 
@@ -84,6 +103,7 @@ Or download and unzip the repository.
    - Sidebar ratings panel (IMDb, RT, MAL, Metacritic)
    - Hover the poster for the overlay
 3. Go to your activity feed — hover the ⓘ on any poster
+4. Go to any user's diary page — you should see the Diary Stats panel
 
 ---
 
@@ -95,15 +115,18 @@ content.js                          background.js
 Scrapes from Letterboxd DOM:        API calls (runs in service worker):
 • data-tmdb-id attribute     ───►   1. TMDB /movie/{id} (by TMDB ID)
 • IMDb link in footer               2. OMDb ?i={imdbId} (by IMDb ID)
-• Title, year, genres               4. Jikan search (anime only)
-• Letterboxd rating                  5. Friends page scrape
-                                    
-Injects into page:                  Caching:
-• Metadata bar                      • In-memory (session)
-• Sidebar ratings panel             • chrome.storage.local (24h)
-• Poster overlay                    • Per-user local cache (permanent)
-• Grid info cards                   • OMDb key rotation + exhaustion
-• Friends histogram
+• Title, year, genres               3. Wikidata SPARQL (RT/MC slugs)
+• Letterboxd rating                 4. RT / Metacritic (direct scrape)
+• Diary page entries                5. Jikan search (anime only)
+                                    6. Friends page scrape
+Injects into page:                  7. Diary page scrape + enrichment
+• Metadata bar
+• Sidebar ratings panel             Caching:
+• Poster overlay                    • In-memory (session)
+• Grid info cards                   • chrome.storage.local (24h)
+• Friends histogram                 • Per-user local cache (permanent)
+• List progress bars                • OMDb key rotation + exhaustion
+• Diary stats panel                 • Diary stats (1h TTL)
 ```
 
 ### How Film Lookup Works
@@ -111,12 +134,21 @@ Injects into page:                  Caching:
 1. **content.js** scrapes the TMDB ID directly from Letterboxd's DOM (`data-tmdb-id` attribute) and the IMDb ID from footer links
 2. Sends both IDs to **background.js** — no title search needed for film pages
 3. **background.js** calls TMDB by exact ID → gets genres, original title, IMDb ID confirmation
-4. Fetches the IMDb page directly using JSON-LD metadata for an up-to-the-minute native rating.
-5. Looks up Wikidata entries to discover exact Rotten Tomatoes and Metacritic slugs, then natively caches their embedded JSON-LD.
+4. Fetches the IMDb page directly using JSON-LD metadata for an up-to-the-minute native rating
+5. Looks up Wikidata entries to discover exact Rotten Tomatoes and Metacritic slugs, then scrapes their embedded JSON-LD
 6. If the film is Animation genre → searches Jikan (MAL) with the original title first (e.g. "君の名は。"), falls back to English title
 7. Results are cached at three levels: in-memory, chrome.storage.local (24h), and per-user permanent cache
 
 For **grid posters** (activity, lists) that may not have TMDB IDs in the DOM, it falls back to TMDB title search.
+
+### How Diary Stats Work
+
+1. **content.js** detects diary pages (`/{user}/diary/`) and injects the stats panel
+2. Sends `FETCH_DIARY_STATS` to **background.js** with username and year
+3. **background.js** paginates through `/username/films/diary/for/YYYY/page/N/`, parsing each `<tr class="diary-entry-row">` for: film slug, title, date, rating, rewatch/review/liked status
+4. For genres and runtime, each unique film slug is enriched: first scrape the Letterboxd page for the TMDB ID, then call TMDB API for genres (HTML scraping doesn't return genres since they're rendered client-side)
+5. Stats are computed: monthly/weekly/day-of-week breakdowns, top genres, total runtime, averages
+6. Cached in chrome.storage.local with 1h TTL; refresh button forces re-scrape
 
 ---
 
@@ -125,7 +157,7 @@ For **grid posters** (activity, lists) that may not have TMDB IDs in the DOM, it
 ```
 letterboxd-enhanced/
 ├── manifest.json       # Extension config (Manifest V3)
-├── background.js       # Service worker — API calls, caching, key rotation
+├── background.js       # Service worker — API calls, caching, key rotation, diary scraping
 ├── content.js          # Content script — DOM scraping + injection
 ├── styles.css          # Injected styles (matches Letterboxd dark theme)
 ├── popup.html          # Settings popup UI
@@ -134,15 +166,17 @@ letterboxd-enhanced/
 │   ├── icon16.png
 │   ├── icon48.png
 │   └── icon128.png
-└── README.md
+├── README.md           # This file
+└── LICENSE             # MIT
 ```
 
 ## API Usage & Caching
 
 ### TMDB (primary)
 - 1 call per film (by ID) — very efficient
+- Also used for diary stats genre enrichment (cached, so repeat visits cost nothing)
 - Free tier: rate-limited but no hard daily cap
-- Provides: film details, genres, IMDb ID, original title, TMDB rating
+- Provides: film details, genres, IMDb ID, original title, TMDB rating, runtime
 
 ### OMDb (optional, for RT/Metacritic)
 - 1 call per film (by IMDb ID — never fails on title matching)
@@ -164,9 +198,14 @@ Hover/visit a film
       → chrome.storage.local (24h TTL)
         → API call (only if all caches miss)
           → Saved to all cache layers
+
+Diary stats
+  → chrome.storage.local (1h TTL, per username+year)
+    → Full diary scrape + TMDB enrichment
+      → Saved to cache
 ```
 
-Once you've visited a film, revisiting it costs **zero API calls** — even months later.
+Once you've visited a film, revisiting it costs **zero API calls** — even months later. Diary stats are cached for 1 hour and can be manually refreshed.
 
 ---
 
@@ -182,6 +221,8 @@ All settings are in the popup (click the extension icon):
 | Sidebar Ratings | Toggle the external ratings panel in the sidebar |
 | Metadata Bar | Toggle the runtime/genre/rating bar under the title |
 | Friends Histogram | Toggle the friends' rating histogram |
+| List Progress Bars | Toggle progress bars on list cards |
+| Diary Stats | Toggle the diary analytics panel |
 
 ---
 
@@ -193,8 +234,9 @@ All settings are in the popup (click the extension icon):
 | Only MAL showing, no IMDb/RT | OMDb key missing or exhausted. IMDb score still shows via TMDB fallback |
 | Wrong MAL result | Clear extension storage → `chrome://extensions/` → Details → Clear storage |
 | Poster overlay not appearing | Reload extension + hard refresh (`Ctrl+Shift+R`). Check console for errors |
-| "here" showing as a genre | Update to latest version — fixed in genre scraping filter |
 | Stale/wrong cached data | Clear storage: `chrome://extensions/` → Letterboxd Enhanced → Details → Clear storage |
+| Diary stats not showing genres | Ensure TMDB key is set — genres are fetched via TMDB API |
+| Diary stats slow on first load | Normal — scrapes all diary pages + enriches each film. Subsequent loads use cache |
 | Extension disappeared after Chrome update | Go to `chrome://extensions/` → re-enable or re-load unpacked |
 
 ---
@@ -205,7 +247,7 @@ All settings are in the popup (click the extension icon):
 Replace the files in the folder and click the **reload** button on `chrome://extensions/`. No reinstall needed.
 
 ### Cache Key Versioning
-Cache keys are prefixed with version numbers (`lbe3:`, `mal:v3:`, etc.). When changing data format, bump the version to auto-invalidate old cached entries.
+Cache keys are prefixed with version numbers (`lbe5:`, `mal:v3:`, `diary-stats:v7:`, etc.). When changing data format, bump the version to auto-invalidate old cached entries.
 
 ### CSS Class Prefix
 All injected CSS classes use the `lbe-` prefix to avoid conflicts with Letterboxd's own styles.

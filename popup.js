@@ -1,4 +1,4 @@
-const DEFAULTS = { omdbKey: "", tmdbKey: "", togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true };
+const DEFAULTS = { omdbKey: "", tmdbKey: "", togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true, toggleDiaryStats: true };
 
 chrome.storage.sync.get(DEFAULTS, (s) => {
   document.getElementById("omdbKey").value = s.omdbKey;
@@ -8,6 +8,7 @@ chrome.storage.sync.get(DEFAULTS, (s) => {
   document.getElementById("toggleMeta").checked = s.toggleMeta;
   document.getElementById("toggleFriendsHisto").checked = s.toggleFriendsHisto;
   document.getElementById("toggleListProgress").checked = s.toggleListProgress;
+  document.getElementById("toggleDiaryStats").checked = s.toggleDiaryStats;
 });
 
 function refreshStats() {
@@ -33,6 +34,7 @@ document.getElementById("save").addEventListener("click", () => {
     toggleMeta: document.getElementById("toggleMeta").checked,
     toggleFriendsHisto: document.getElementById("toggleFriendsHisto").checked,
     toggleListProgress: document.getElementById("toggleListProgress").checked,
+    toggleDiaryStats: document.getElementById("toggleDiaryStats").checked,
   }, () => {
     document.getElementById("status").style.display = "block";
     setTimeout(() => document.getElementById("status").style.display = "none", 2000);
