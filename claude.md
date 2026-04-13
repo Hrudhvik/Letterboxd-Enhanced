@@ -41,7 +41,7 @@ In-memory Map (session) → chrome.storage.local (24h TTL) → API call
 ```
 - `cached(key, fn)` — generic cache-through helper
 - `getLocal(user, slug)` / `setLocal(user, slug, data)` — per-user permanent cache
-- Cache keys are versioned (e.g. `lbe5:`, `mal:v3:`, `friends:v5:`, `diary-stats:v7:`)
+- Cache keys are versioned (e.g. `lbe5:`, `mal:v3:`, `friends:v5:`, `diary-stats:v9:`)
 
 ### Scraping Letterboxd Pages
 - Film pages: regex on HTML for `data-tmdb-id`, `imdb.com/title/`, runtime, content rating, original title
@@ -63,7 +63,7 @@ In-memory Map (session) → chrome.storage.local (24h TTL) → API call
 - Diary weekly/day-of-week bars: `#67758a` (default), `#40bcf4` (peak highlight)
 - Diary selected month: `rgba(64, 188, 244, 0.10)` overlay background
 - Diary expand card: `#1b2028` bg, `#2c3440` border, `6px` border-radius
-- Tooltips: `#70839a` bg with `#f4f7fb` text, arrow pointer, `box-shadow: 0 4px 16px rgba(0,0,0,0.35)`
+- Tooltips: HTML `.lbe-tooltip` inside elements, supporting rich text formatting (bold, line breaks). `#70839a` bg with `#f4f7fb` text, arrow pointer, `box-shadow: 0 4px 16px rgba(0,0,0,0.35)`
 - Section headers: `font-size: 11px; font-weight: 500; letter-spacing: 2px; color: #9ab; text-transform: uppercase`
 - Font: `'Graphik-Regular-Web', 'Helvetica Neue', Helvetica, Arial, sans-serif`
 
@@ -113,7 +113,21 @@ In-memory Map (session) → chrome.storage.local (24h TTL) → API call
 **Yearly overview:**
 - Total films, avg rating, per-month average, rewatch count, liked count, review count, total runtime (hours)
 - Top 5 genres with counts (from TMDB API data)
-- Monthly histogram with new/rewatch stacked bars
+- Monthly histogram with metric-aware stacked bars
+
+**Metric dropdown (applies to all three views: Monthly, Weekly, Day):**
+- **New vs. Rewatch** (default): New films (gray) + Rewatches (gold)
+- **Likes & Reviews**: Liked (orange), Reviewed (green), Both (blue), Neither (gray)
+- **Rating Distribution**: High ≥4 (green), Mid 3–3.5 (blue), Low <3 (orange), Unrated (gray)
+- **Top Genres**: Top 5 genres with dynamic colors + Other (gray). Genre list changes per year.
+- Selected metric persists via `chrome.storage.sync` (`diaryMetric` key)
+- Legends and tooltips update dynamically with the selected metric
+
+**Per-metric data computed in background.js (`computeMetricBreakdowns`):**
+- `monthlyMetrics[0..11]` — per-month activity/ratings/genres breakdowns
+- `weeklyMetrics[0..52]` — per-week breakdowns
+- `dayOfWeekMetrics[0..6]` — per-day-of-week breakdowns (Sun=0)
+- Each breakdown: `{ activity: {liked,reviewed,both,neither}, ratings: {high,mid,low,unrated}, genres: {buckets:{...}, other} }`
 
 **Monthly expanded (click a month bar):**
 - Day-of-week distribution histogram (Sun–Sat)
@@ -122,21 +136,24 @@ In-memory Map (session) → chrome.storage.local (24h TTL) → API call
 **Weekly view:**
 - 53-element array of films per ISO week
 - Peak week highlighted with count, week number, and date range
+- Bars are stacked per selected metric (segments inside each weekly bar)
 
 **Yearly day-of-week view:**
 - 7-element aggregate across all months (Mon–Sun, reordered from JS Sun=0)
 - Peak day highlighted with count label
+- Horizontal bars are segmented per selected metric
 
 ### UI Structure
 - Toggle: three-button segmented control (Monthly | Weekly | Day) switches between views
 - Monthly view: stacked vertical bars, clickable to expand detail card
 - Weekly view: 52 thin vertical bars with peak highlight
 - Day-of-week view: horizontal bars with peak highlight
+- Peak highlighting: Applied dynamically via `.lbe-ds-peak` class to parent stack containers (`.lbe-ds-stk`, `.lbe-ds-wk-stacked`, etc.) to wrap the entire bar rather than just top segments.
 - Year navigation: `‹` `›` arrows, refresh button
 - Expand section: visually distinct card (`#1b2028` bg, border, border-radius)
 
 ### Caching
-- Key: `diary-stats:v7:{username}:{year}`
+- Key: `diary-stats:v9:{username}:{year}`
 - TTL: 24 hours
 - Refresh button sends `CLEAR_DIARY_CACHE` then re-fetches
 - TMDB film data cached via existing `tmdb:{type}:{id}` keys (shared with ratings feature)

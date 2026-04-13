@@ -311,7 +311,7 @@
       const pctOfMax = Math.round((count / maxCount) * 100);
       const pctOfTotal = totalCount ? Math.round((count / totalCount) * 100) : 0;
       const tip = `${count.toLocaleString()} ${starLabel(rating)} rating${count === 1 ? "" : "s"} (${pctOfTotal}%)`;
-      barsHTML += `<div class="lbe-fh-bar-wrap" tabindex="0" aria-label="${tip}" data-tip="${tip}"><div class="lbe-fh-bar" style="height:${Math.max(pctOfMax, 6)}%"></div></div>`;
+      barsHTML += `<div class="lbe-fh-bar-wrap" tabindex="0" aria-label="${tip}" ><div class="lbe-tooltip">${tip}</div><div class="lbe-fh-bar" style="height:${Math.max(pctOfMax, 6)}%"></div></div>`;
     }
 
     const countLabel = hasUser
@@ -691,7 +691,215 @@
 
   let _diaryStatsInjected = false;
   let _diaryExpandedMonth = null;
+  let _lastDiaryMetric = "total";
+  let _lastDiaryYear = null;
 
+  // Metric color palettes
+  const METRIC_COLORS = {
+    total: { bar: "#5a6572", peak: "#40bcf4" },
+    new_vs_rewatch: { new: "#5a6572", rewatch: "#FAC775" },
+    activity: { liked: "#ff8800", reviewed: "#00e054", both: "#40bcf4", neither: "#3a4550" },
+    ratings: { high: "#00e054", mid: "#40bcf4", low: "#ff8800", unrated: "#3a4550" },
+    genres: ["#00e054", "#40bcf4", "#FAC775", "#ff8800", "#c084fc"],
+  };
+  const GENRE_OTHER_COLOR = "#3a4550";
+
+  // Load saved metric preference
+  chrome.storage.sync.get({ diaryMetric: "total" }, s => { _lastDiaryMetric = s.diaryMetric || "total"; });
+
+  function saveMetricPref(metric) {
+    _lastDiaryMetric = metric;
+    chrome.storage.sync.set({ diaryMetric: metric });
+  }
+
+  // ── Metric bar builders (shared across all views) ──────────────
+  function metricStackHTML(total, metricData, metric, maxVal, heightUnit, topGenreNames, isTop) {
+    if (total === 0) return "";
+    const totalH = Math.round((total / maxVal) * heightUnit);
+    
+    if (metric === "total") {
+      const color = isTop ? METRIC_COLORS.total.peak : METRIC_COLORS.total.bar;
+      return `<div class="lbe-ds-bar-seg" style="height:${totalH}px;background:${color}"></div>`;
+    }
+    // Resolve rewatch data from either metrics sub-object or direct property
+    const mm = metricData.metrics || null;
+    const rwCount = mm ? (mm.rewatchCount || 0) : (metricData.rewatchCount || 0);
+    if (metric === "new_vs_rewatch") {
+      const parts = [
+        { val: total - rwCount, color: METRIC_COLORS.new_vs_rewatch.new },
+        { val: rwCount, color: METRIC_COLORS.new_vs_rewatch.rewatch },
+      ];
+      return buildSegments(parts, total, maxVal, heightUnit);
+    }
+    if (!mm) return `<div class="lbe-ds-bar-seg" style="height:${totalH}px;background:#5a6572"></div>`;
+    if (metric === "activity") {
+      const a = mm.activity;
+      const parts = [
+        { val: a.neither, color: METRIC_COLORS.activity.neither },
+        { val: a.liked, color: METRIC_COLORS.activity.liked },
+        { val: a.reviewed, color: METRIC_COLORS.activity.reviewed },
+        { val: a.both, color: METRIC_COLORS.activity.both },
+      ];
+      return buildSegments(parts, total, maxVal, heightUnit);
+    }
+    if (metric === "ratings") {
+      const r = mm.ratings;
+      const parts = [
+        { val: r.high, color: METRIC_COLORS.ratings.high },
+        { val: r.mid, color: METRIC_COLORS.ratings.mid },
+        { val: r.low, color: METRIC_COLORS.ratings.low },
+        { val: r.unrated, color: METRIC_COLORS.ratings.unrated },
+      ];
+      return buildSegments(parts, total, maxVal, heightUnit);
+    }
+    if (metric === "genres") {
+      const g = mm.genres;
+      const parts = [];
+      (topGenreNames || []).forEach((gn, idx) => {
+        parts.push({ val: g.buckets[gn] || 0, color: METRIC_COLORS.genres[idx % METRIC_COLORS.genres.length] });
+      });
+      parts.push({ val: g.other, color: GENRE_OTHER_COLOR });
+      return buildSegments(parts, total, maxVal, heightUnit);
+    }
+    return `<div class="lbe-ds-bar-seg" style="height:${totalH}px;background:#5a6572"></div>`;
+  }
+
+  function buildSegments(parts, total, maxVal, heightUnit) {
+    const totalH = Math.round((total / maxVal) * heightUnit);
+    let html = "", usedH = 0;
+    const nonZero = parts.filter(p => p.val > 0);
+    nonZero.forEach((p, idx) => {
+      let h;
+      if (idx === nonZero.length - 1) {
+        h = totalH - usedH;
+      } else {
+        h = Math.max(Math.round((p.val / total) * totalH), 2);
+      }
+      usedH += h;
+      
+      html += `<div class="lbe-ds-bar-seg" style="height:${h}px;background:${p.color}"></div>`;
+    });
+    return html || `<div class="lbe-ds-bar-seg" style="height:${Math.max(totalH, 2)}px;background:#3a4550"></div>`;
+  }
+
+  // Horizontal segment bar (for day-of-week view)
+  function metricHorizSegments(total, metricData, metric, maxVal, topGenreNames) {
+    if (total === 0) return `<div class="lbe-ds-dow-fill" style="width:0%"></div>`;
+    const pct = Math.round((total / maxVal) * 100);
+    const isTop = total === maxVal && total > 0;
+    
+    if (metric === "total") {
+      return `<div class="lbe-ds-dow-fill${isTop ? " lbe-ds-dow-top" : ""}" style="width:${Math.max(pct, 3)}%"></div>`;
+    }
+    // Build parts array for any metric
+    let parts = [];
+    if (metric === "new_vs_rewatch") {
+      const rwCount = metricData.rewatchCount || 0;
+      parts = [
+        { val: total - rwCount, color: METRIC_COLORS.new_vs_rewatch.new },
+        { val: rwCount, color: METRIC_COLORS.new_vs_rewatch.rewatch },
+      ];
+    } else if (metric === "activity") {
+      const a = metricData.activity;
+      parts = [
+        { val: a.neither, color: METRIC_COLORS.activity.neither },
+        { val: a.liked, color: METRIC_COLORS.activity.liked },
+        { val: a.reviewed, color: METRIC_COLORS.activity.reviewed },
+        { val: a.both, color: METRIC_COLORS.activity.both },
+      ];
+    } else if (metric === "ratings") {
+      const r = metricData.ratings;
+      parts = [
+        { val: r.high, color: METRIC_COLORS.ratings.high },
+        { val: r.mid, color: METRIC_COLORS.ratings.mid },
+        { val: r.low, color: METRIC_COLORS.ratings.low },
+        { val: r.unrated, color: METRIC_COLORS.ratings.unrated },
+      ];
+    } else if (metric === "genres") {
+      const g = metricData.genres;
+      (topGenreNames || []).forEach((gn, idx) => {
+        parts.push({ val: g.buckets[gn] || 0, color: METRIC_COLORS.genres[idx % METRIC_COLORS.genres.length] });
+      });
+      parts.push({ val: g.other, color: GENRE_OTHER_COLOR });
+    }
+    const nonZero = parts.filter(p => p.val > 0);
+    if (!nonZero.length) return `<div class="lbe-ds-dow-fill" style="width:${Math.max(pct, 3)}%"></div>`;
+    let html = "";
+    nonZero.forEach((p, idx) => {
+      const segW = (p.val / total) * pct;
+      const isFirst = idx === 0;
+      const isLast = idx === nonZero.length - 1;
+      const radius = isFirst && isLast ? "3px" : isFirst ? "3px 0 0 3px" : isLast ? "0 3px 3px 0" : "0";
+      
+      html += `<div class="lbe-ds-dow-seg" style="width:${Math.max(segW, 0.5)}%;background:${p.color};border-radius:${radius};"></div>`;
+    });
+    return html;
+  }
+
+  function metricTooltip(monthName, total, metricData, metric, topGenreNames) {
+    const f = total === 1 ? "film" : "films";
+    if (metric === "total") return `<b>${monthName}</b>: ${total} ${f}`;
+    const mm = metricData.metrics || null;
+    const rwCount = mm ? (mm.rewatchCount || 0) : (metricData.rewatchCount || 0);
+    if (metric === "new_vs_rewatch") {
+      const nw = total - rwCount;
+      return `<b>${monthName}</b>: ${total} ${f}<br><b>N</b>: ${nw} <b>RW</b>: ${rwCount}`;
+    }
+    if (!mm) return `<b>${monthName}</b>: ${total} ${f}`;
+    if (metric === "activity") {
+      const a = mm.activity;
+      const p = [];
+      if (a.liked) p.push(`<b>♥</b>: ${a.liked}`);
+      if (a.reviewed) p.push(`<b>Rev</b>: ${a.reviewed}`);
+      if (a.both) p.push(`<b>Both</b>: ${a.both}`);
+      if (a.neither) p.push(`<b>—</b>: ${a.neither}`);
+      return `<b>${monthName}</b>: ${total} ${f}<br>${p.join(" ")}`;
+    }
+    if (metric === "ratings") {
+      const r = mm.ratings;
+      const p = [];
+      if (r.high) p.push(`<b>Hi</b>: ${r.high}`);
+      if (r.mid) p.push(`<b>Mid</b>: ${r.mid}`);
+      if (r.low) p.push(`<b>L</b>: ${r.low}`);
+      if (r.unrated) p.push(`<b>NR</b>: ${r.unrated}`);
+      return `<b>${monthName}</b>: ${total} ${f}<br>${p.join(" ")}`;
+    }
+    if (metric === "genres") {
+      const g = mm.genres;
+      const p = [];
+      const shortG = { "Science Fiction": "Sci-Fi", "Documentary": "Doc", "Animation": "Anim", "Adventure": "Adv", "Family": "Fam", "History": "Hist", "Romance": "Rom", "Thriller": "Thr", "Mystery": "Mys" };
+      (topGenreNames || []).forEach(gn => { if (g.buckets[gn]) p.push(`<b>${shortG[gn] || gn.substring(0,4)}</b>: ${g.buckets[gn]}`); });
+      if (g.other) p.push(`<b>Other</b>: ${g.other}`);
+      return `<b>${monthName}</b>: ${total} ${f}<br>${p.join("  ")}`;
+    }
+    return `<b>${monthName}</b>: ${total} ${f}`;
+  }
+
+  function metricLegendHTML(metric, topGenreNames) {
+    if (metric === "total") {
+      return `<span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.total.bar}"></span>Films</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.total.peak}"></span>Peak</span>`;
+    }
+    if (metric === "new_vs_rewatch") {
+      return `<span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.new_vs_rewatch.new}"></span>New</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.new_vs_rewatch.rewatch}"></span>Rewatch</span>`;
+    }
+    if (metric === "activity") {
+      return `<span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.activity.liked}"></span>Liked</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.activity.reviewed}"></span>Reviewed</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.activity.both}"></span>Both</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.activity.neither}"></span>Neither</span>`;
+    }
+    if (metric === "ratings") {
+      return `<span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.ratings.high}"></span>High ≥4</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.ratings.mid}"></span>Mid 3–3.5</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.ratings.low}"></span>Low &lt;3</span><span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.ratings.unrated}"></span>Unrated</span>`;
+    }
+    if (metric === "genres") {
+      let html = "";
+      (topGenreNames || []).forEach((gn, idx) => {
+        html += `<span><span class="lbe-ds-dot" style="background:${METRIC_COLORS.genres[idx % METRIC_COLORS.genres.length]}"></span>${gn}</span>`;
+      });
+      html += `<span><span class="lbe-ds-dot" style="background:${GENRE_OTHER_COLOR}"></span>Other</span>`;
+      return html;
+    }
+    return "";
+  }
+
+  // ── Inject diary stats ─────────────────────────────────────────
   async function injectDiaryStats() {
     if (_diaryStatsInjected) return;
     if (document.querySelector(".lbe-ds")) { _diaryStatsInjected = true; return; }
@@ -704,96 +912,72 @@
     const currentYear = new Date().getFullYear();
     let year = currentYear;
 
-    // Try to detect year from URL: /username/diary/for/2025/
     const ym = location.pathname.match(/\/diary\/for\/(\d{4})/);
     if (ym) year = parseInt(ym[1], 10);
+    _lastDiaryYear = year;
     console.log("LBE: diary stats — year:", year);
 
-    // Create container
     const container = document.createElement("div");
-    container.className = "lbe-ds";
+    container.className = "lbe-ds lbe-ds-collapsed";
     container.innerHTML = buildDiaryStatsLoading(year);
 
-    // Insert into page — try multiple selectors for robustness
     let inserted = false;
     const insertTargets = [
-      ".diary-navigation",
-      "nav.sub-nav",
-      ".content-nav",
-      ".diary-filters",
-      "#diary-table",
-      ".diary-table",
-      "table.diary-table",
-      ".pagination",
+      ".diary-navigation", "nav.sub-nav", ".content-nav", ".diary-filters",
+      "#diary-table", ".diary-table", "table.diary-table", ".pagination",
     ];
 
-    // Strategy 1: Insert after a navigation element
     for (const sel of insertTargets.slice(0, 4)) {
       const el = document.querySelector(sel);
-      if (el) {
-        el.parentElement.insertBefore(container, el.nextSibling);
-        console.log("LBE: diary stats — inserted after", sel);
-        inserted = true;
-        break;
-      }
+      if (el) { el.parentElement.insertBefore(container, el.nextSibling); inserted = true; break; }
     }
-
-    // Strategy 2: Insert before the diary table / entries
     if (!inserted) {
       for (const sel of insertTargets.slice(4)) {
         const el = document.querySelector(sel);
-        if (el) {
-          el.parentElement.insertBefore(container, el);
-          console.log("LBE: diary stats — inserted before", sel);
-          inserted = true;
-          break;
-        }
+        if (el) { el.parentElement.insertBefore(container, el); inserted = true; break; }
       }
     }
-
-    // Strategy 3: Insert at start of #content or section.s-body
     if (!inserted) {
       const fallbacks = ["#content", "section.s-body", ".body-content", "main", ".content-wrap", "body"];
       for (const sel of fallbacks) {
         const el = document.querySelector(sel);
         if (el) {
-          // Try to insert after the first header/nav-like child
           const firstChild = el.querySelector("header, nav, .content-nav, h1, h2");
-          if (firstChild) {
-            firstChild.parentElement.insertBefore(container, firstChild.nextSibling);
-          } else {
-            el.prepend(container);
-          }
-          console.log("LBE: diary stats — fallback inserted into", sel);
-          inserted = true;
-          break;
+          if (firstChild) firstChild.parentElement.insertBefore(container, firstChild.nextSibling);
+          else el.prepend(container);
+          inserted = true; break;
         }
       }
     }
+    if (!inserted) return;
 
-    if (!inserted) {
-      console.log("LBE: diary stats — couldn't find insertion point!");
-      return;
-    }
-
-    // Fetch and render
     await fetchAndRenderDiaryStats(container, username, year);
 
-    // Year navigation handlers
+    // Event delegation
     container.addEventListener("click", async (e) => {
+      if (e.target.closest(".lbe-ds-ttl")) { container.classList.toggle("lbe-ds-collapsed"); return; }
+
+      const expH = e.target.closest(".lbe-ds-exp-h");
+      if (expH) {
+        _diaryExpandedMonth = null;
+        container.querySelector(".lbe-ds-expand")?.remove();
+        container.querySelectorAll(".lbe-ds-col.lbe-ds-act").forEach(c => c.classList.remove("lbe-ds-act"));
+        return;
+      }
+
       const btn = e.target.closest(".lbe-ds-yr-btn");
       if (btn) {
         const dir = btn.dataset.dir;
         year += dir === "prev" ? -1 : 1;
         if (year > currentYear) year = currentYear;
         if (year < 2000) year = 2000;
+        _lastDiaryYear = year;
         container.innerHTML = buildDiaryStatsLoading(year);
         _diaryExpandedMonth = null;
         await fetchAndRenderDiaryStats(container, username, year);
         return;
       }
 
-      // Month bar click
       const bar = e.target.closest(".lbe-ds-col");
       if (bar) {
         const mi = parseInt(bar.dataset.month, 10);
@@ -811,7 +995,6 @@
         return;
       }
 
-      // Toggle view (Monthly / Weekly / Day)
       const togBtn = e.target.closest(".lbe-ds-tog-btn");
       if (togBtn) {
         const view = togBtn.dataset.view;
@@ -823,12 +1006,22 @@
         return;
       }
 
-      // Refresh button
       if (e.target.closest(".lbe-ds-refresh")) {
         await chrome.runtime.sendMessage({ type: "CLEAR_DIARY_CACHE", username, year });
         container.innerHTML = buildDiaryStatsLoading(year);
         _diaryExpandedMonth = null;
         await fetchAndRenderDiaryStats(container, username, year);
+      }
+    });
+
+    // Metric dropdown change handler
+    container.addEventListener("change", (e) => {
+      if (e.target.classList.contains("lbe-ds-metric-select")) {
+        const metric = e.target.value;
+        saveMetricPref(metric);
+        if (_lastDiaryStats) {
+          applyMetricToAllViews(container, _lastDiaryStats, metric, _lastDiaryYear);
+        }
       }
     });
   }
@@ -837,110 +1030,202 @@
 
   async function fetchAndRenderDiaryStats(container, username, year) {
     try {
-      console.log("LBE: diary stats — fetching for", username, year);
       const resp = await chrome.runtime.sendMessage({ type: "FETCH_DIARY_STATS", username, year });
-      console.log("LBE: diary stats — response:", resp ? `${resp.entries?.length || 0} entries, cached: ${resp.cached}` : "null");
       if (!resp || resp.error || !resp.stats) {
         container.innerHTML = buildDiaryStatsEmpty(year);
         _lastDiaryStats = null;
         return;
       }
       _lastDiaryStats = resp.stats;
-      container.innerHTML = buildDiaryStatsHTML(resp.stats, year);
+      console.log("LBE: diary stats — metric:", _lastDiaryMetric, "hasMonthlyMetrics:", !!resp.stats.monthlyMetrics, "hasWeeklyMetrics:", !!resp.stats.weeklyMetrics, "hasDayMetrics:", !!resp.stats.dayOfWeekMetrics);
+      if (resp.stats.monthlyMetrics?.[0]) console.log("LBE: diary stats — sample monthlyMetrics[0]:", JSON.stringify(resp.stats.monthlyMetrics[0]));
+      container.innerHTML = buildDiaryStatsHTML(resp.stats, year, _lastDiaryMetric);
     } catch (e) {
-      console.error("LBE: diary stats render error", e);
       container.innerHTML = buildDiaryStatsEmpty(year);
     }
   }
 
   function buildDiaryStatsLoading(year) {
-    return `<div class="lbe-ds-hdr"><span class="lbe-ds-ttl">DIARY STATS</span><div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div></div>
+    return `<div class="lbe-ds-hdr"><span class="lbe-ds-ttl">DIARY STATS <span class="lbe-ds-arr">&#9650;</span></span><div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div></div>
       <div class="lbe-ds-loading"><div class="lbe-ds-spinner"></div><span>Scanning diary pages...</span></div>`;
   }
 
   function buildDiaryStatsEmpty(year) {
-    return `<div class="lbe-ds-hdr"><span class="lbe-ds-ttl">DIARY STATS</span><div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div></div>
+    return `<div class="lbe-ds-hdr"><span class="lbe-ds-ttl">DIARY STATS <span class="lbe-ds-arr">&#9650;</span></span><div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div></div>
       <div class="lbe-ds-empty">No diary entries found for ${year}</div>`;
   }
 
-  function buildDiaryStatsHTML(stats, year) {
+  function buildDiaryStatsHTML(stats, year, metric) {
     const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const MONTH_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
     const maxMonthTotal = Math.max(...stats.monthly.map(m => m.total), 1);
+    const topGN = stats.topGenreNames || stats.topGenres.map(g => g.name);
 
-    // Build bars
+    // Monthly bars
     let barsHTML = "";
     for (let i = 0; i < 12; i++) {
       const m = stats.monthly[i];
-      const totalH = Math.round((m.total / maxMonthTotal) * 100);
-      const rwH = m.total > 0 ? Math.max(Math.round((m.rewatchCount / maxMonthTotal) * 100), m.rewatchCount > 0 ? 3 : 0) : 0;
-      const newH = m.total > 0 ? Math.max(totalH - rwH, 2) : 0;
-      const rwText = m.rewatchCount === 0 ? "no rewatches" : m.rewatchCount === 1 ? "1 rewatch" : `${m.rewatchCount} rewatches`;
-      const tip = `${MONTH_FULL[i]}: ${m.total} ${m.total === 1 ? "film" : "films"}, ${rwText}`;
-
-      barsHTML += `<div class="lbe-ds-col" data-month="${i}" data-tip="${tip}"><div class="lbe-ds-stk"><div class="lbe-ds-bar-new" style="height:${newH}px"></div>${rwH > 0 ? `<div class="lbe-ds-bar-rw" style="height:${rwH}px"></div>` : ""}</div></div>`;
+      const mm = stats.monthlyMetrics ? stats.monthlyMetrics[i] : null;
+      const metricData = { rewatchCount: m.rewatchCount, metrics: mm };
+      const isTop = m.total === maxMonthTotal && m.total > 0;
+      const tip = metricTooltip(MONTH_SHORT[i], m.total, metricData, metric, topGN);
+      const stack = metricStackHTML(m.total, metricData, metric, maxMonthTotal, 100, topGN, isTop);
+      barsHTML += `<div class="lbe-ds-col" data-month="${i}" ><div class="lbe-tooltip">${tip}</div><div class="lbe-ds-stk${isTop ? ' lbe-ds-peak' : ''}">${stack}</div></div>`;
     }
 
-    // Labels
     let labelsHTML = MONTH_SHORT.map(m => `<span>${m}</span>`).join("");
-
-    // Genres
     let genresHTML = stats.topGenres.map(g => `<span class="lbe-ds-g">${g.name}<b>${g.count}</b></span>`).join("");
-
     const avgStr = stats.avgRating !== null ? stats.avgRating.toFixed(1) : "—";
     const perMonthStr = stats.perMonth.toFixed(1);
 
+    const metricOpts = [
+      { val: "total", label: "Total Films" },
+      { val: "new_vs_rewatch", label: "New vs. Rewatch" },
+      { val: "activity", label: "Likes &amp; Reviews" },
+      { val: "ratings", label: "Rating Distribution" },
+      { val: "genres", label: "Top Genres" },
+    ];
+    const selectHTML = metricOpts.map(o => `<option value="${o.val}"${o.val === metric ? " selected" : ""}>${o.label}</option>`).join("");
+
     return `<div class="lbe-ds-hdr">
-        <span class="lbe-ds-ttl">DIARY STATS</span>
+        <span class="lbe-ds-ttl">DIARY STATS <span class="lbe-ds-arr">&#9650;</span></span>
         <div class="lbe-ds-yr-wrap">
           <span class="lbe-ds-refresh" title="Refresh stats">&#8635;</span>
           <div class="lbe-ds-yr"><span class="lbe-ds-yr-btn" data-dir="prev">&#8249;</span><span class="lbe-ds-yr-v">${year}</span><span class="lbe-ds-yr-btn" data-dir="next">&#8250;</span></div>
         </div>
       </div>
-      <div class="lbe-ds-stats">
-        <div><span class="lbe-ds-big">${stats.totalFilms}</span><span class="lbe-ds-unit">films</span></div>
-        <div class="lbe-ds-sep"></div>
-        <div><span class="lbe-ds-v">${avgStr}</span><span class="lbe-ds-unit">avg</span><div class="lbe-ds-sub">${perMonthStr} per month</div></div>
-        <div class="lbe-ds-sep"></div>
-        <div><span class="lbe-ds-v">${stats.rewatchCount}</span><span class="lbe-ds-unit">rewatches</span></div>
-        <div class="lbe-ds-sep"></div>
-        <div><span class="lbe-ds-v">${stats.totalHours}h</span><div class="lbe-ds-sub">total runtime</div></div>
-        <div class="lbe-ds-sep"></div>
-        <div><span class="lbe-ds-v">${stats.likedCount || 0}</span><span class="lbe-ds-unit">liked</span></div>
-        <div class="lbe-ds-sep"></div>
-        <div><span class="lbe-ds-v">${stats.reviewCount}</span><span class="lbe-ds-unit">reviews</span></div>
-      </div>
-      ${genresHTML ? `<div class="lbe-ds-genres">${genresHTML}</div>` : ""}
-      <div class="lbe-ds-toggle">
-        <button class="lbe-ds-tog-btn lbe-ds-tog-active" data-view="monthly">Monthly</button>
-        <button class="lbe-ds-tog-btn" data-view="weekly">Weekly</button>
-        <button class="lbe-ds-tog-btn" data-view="day">Day</button>
-      </div>
-      <div class="lbe-ds-view" data-view-id="monthly">
-        <div class="lbe-ds-bars">${barsHTML}</div>
-        <div class="lbe-ds-lbl">${labelsHTML}</div>
-        <div class="lbe-ds-leg"><span><span class="lbe-ds-dot" style="background:#5a6572"></span>New</span><span><span class="lbe-ds-dot" style="background:#FAC775"></span>Rewatch</span></div>
-      </div>
-      <div class="lbe-ds-view" data-view-id="weekly" style="display:none">
-        ${buildWeeklyHTML(stats, year)}
-      </div>
-      <div class="lbe-ds-view" data-view-id="day" style="display:none">
-        ${buildYearlyDayOfWeekHTML(stats)}
+      <div class="lbe-ds-content-wrap">
+        <div class="lbe-ds-content-inner">
+          <div class="lbe-ds-stats">
+            <div><span class="lbe-ds-big">${stats.totalFilms}</span><span class="lbe-ds-unit">films</span></div>
+            <div class="lbe-ds-sep"></div>
+            <div><span class="lbe-ds-v">${avgStr}</span><span class="lbe-ds-unit">avg</span><div class="lbe-ds-sub">${perMonthStr} per month</div></div>
+            <div class="lbe-ds-sep"></div>
+            <div><span class="lbe-ds-v">${stats.rewatchCount}</span><span class="lbe-ds-unit">rewatches</span></div>
+            <div class="lbe-ds-sep"></div>
+            <div><span class="lbe-ds-v">${stats.totalHours}h</span><div class="lbe-ds-sub">total runtime</div></div>
+            <div class="lbe-ds-sep"></div>
+            <div><span class="lbe-ds-v">${stats.likedCount || 0}</span><span class="lbe-ds-unit">liked</span></div>
+            <div class="lbe-ds-sep"></div>
+            <div><span class="lbe-ds-v">${stats.reviewCount}</span><span class="lbe-ds-unit">reviews</span></div>
+          </div>
+          ${genresHTML ? `<div class="lbe-ds-genres">${genresHTML}</div>` : ""}
+          <div class="lbe-ds-toggle-wrap">
+            <div class="lbe-ds-toggle">
+              <button class="lbe-ds-tog-btn lbe-ds-tog-active" data-view="monthly">Monthly</button>
+              <button class="lbe-ds-tog-btn" data-view="weekly">Weekly</button>
+              <button class="lbe-ds-tog-btn" data-view="day">Day</button>
+            </div>
+            <select class="lbe-ds-metric-select" title="Select chart dimension">${selectHTML}</select>
+          </div>
+          
+          <div class="lbe-ds-view" data-view-id="monthly">
+            <div class="lbe-ds-bars">${barsHTML}</div>
+            <div class="lbe-ds-lbl">${labelsHTML}</div>
+            <div class="lbe-ds-leg">${metricLegendHTML(metric, topGN)}</div>
+          </div>
+          <div class="lbe-ds-view" data-view-id="weekly" style="display:none">
+            ${buildWeeklyHTML(stats, year, metric)}
+          </div>
+          <div class="lbe-ds-view" data-view-id="day" style="display:none">
+            ${buildYearlyDayOfWeekHTML(stats, metric)}
+          </div>
+        </div>
       </div>`;
   }
 
-  function buildWeeklyHTML(stats, year) {
+  // ── Apply metric change to all three views without full rebuild ──
+  function applyMetricToAllViews(container, stats, metric, year) {
+    const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MONTH_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const topGN = stats.topGenreNames || stats.topGenres.map(g => g.name);
+    const maxMonthTotal = Math.max(...stats.monthly.map(m => m.total), 1);
+
+    // Update monthly bars
+    const cols = container.querySelectorAll('.lbe-ds-col[data-month]');
+    cols.forEach(col => {
+      const i = parseInt(col.dataset.month, 10);
+      const m = stats.monthly[i];
+      const mm = stats.monthlyMetrics ? stats.monthlyMetrics[i] : null;
+      const metricData = { rewatchCount: m.rewatchCount, metrics: mm };
+      const isTop = m.total === maxMonthTotal && m.total > 0;
+      const tipDiv = col.querySelector(".lbe-tooltip");
+      if (tipDiv) tipDiv.innerHTML = metricTooltip(MONTH_SHORT[i], m.total, metricData, metric, topGN);
+      const stk = col.querySelector(".lbe-ds-stk");
+      if (stk) { stk.innerHTML = metricStackHTML(m.total, metricData, metric, maxMonthTotal, 100, topGN, isTop); if (isTop) stk.classList.add("lbe-ds-peak"); else stk.classList.remove("lbe-ds-peak"); }
+    });
+
+    // Update monthly legend
+    const leg = container.querySelector('[data-view-id="monthly"] .lbe-ds-leg');
+    if (leg) leg.innerHTML = metricLegendHTML(metric, topGN);
+
+    // Rebuild weekly view
+    const weeklyView = container.querySelector('[data-view-id="weekly"]');
+    if (weeklyView) weeklyView.innerHTML = buildWeeklyHTML(stats, year, metric);
+
+    // Rebuild day-of-week view
+    const dayView = container.querySelector('[data-view-id="day"]');
+    if (dayView) dayView.innerHTML = buildYearlyDayOfWeekHTML(stats, metric);
+
+    // Keep expanded month open — no need to close it since metric change
+    // only affects the bar visuals, not the expanded detail card
+  }
+
+  
+    function weekDateRange(weekNum, yr) {
+      const jan1 = new Date(yr, 0, 1);
+      const startDay = (weekNum - 1) * 7 - jan1.getDay() + 1;
+      const start = new Date(yr, 0, startDay);
+      const end = new Date(yr, 0, startDay + 6);
+      const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${MSHORT[start.getMonth()]} ${start.getDate()}&#8211;${start.getMonth() !== end.getMonth() ? MSHORT[end.getMonth()] + " " : ""}${end.getDate()}`;
+    }
+
+    function buildWeeklyHTML(stats, year, metric) {
     if (!stats.weekly || stats.weekly.every(w => w === 0)) return "";
     const max = stats.maxWeekly || 1;
-    const MSHORT = ["Jan", "", "", "Apr", "", "", "Jul", "", "", "Oct", "", ""];
+    const topGN = stats.topGenreNames || stats.topGenres.map(g => g.name);
+    const useStacked = metric !== "total" && stats.weeklyMetrics;
+
     let bars = "";
     for (let w = 0; w < 53; w++) {
       const count = stats.weekly[w];
       const h = Math.round((count / max) * 72);
       const isTop = w === stats.mostWatchedWeekIdx;
-      bars += `<div class="lbe-ds-wk-bar-col${isTop ? " lbe-ds-wk-top" : ""}" style="height:${Math.max(h, count > 0 ? 2 : 0)}px" data-tip="Week ${w + 1}: ${count} ${count === 1 ? "film" : "films"}"></div>`;
+
+      if (useStacked && count > 0) {
+        const wm = stats.weeklyMetrics[w];
+        const f = count === 1 ? "film" : "films";
+        const range = weekDateRange(w + 1, parseInt(year, 10));
+          let tipParts = [`<b>Week ${w + 1}</b> (${range})<br>${count} ${f}`];
+        if (metric === "new_vs_rewatch") {
+          const rw = wm.rewatchCount || 0;
+          tipParts.push(`<b>N</b>: ${count - rw}  <b>RW</b>: ${rw}`);
+        } else if (metric === "activity") {
+          const a = wm.activity;
+          const p = []; if (a.liked) p.push(`<b>♥</b>: ${a.liked}`); if (a.reviewed) p.push(`<b>Rev</b>: ${a.reviewed}`); if (a.both) p.push(`<b>Both</b>: ${a.both}`);
+          if (p.length) tipParts.push(p.join(" "));
+        } else if (metric === "ratings") {
+          const r = wm.ratings;
+          const p = []; if (r.high) p.push(`<b>Hi</b>: ${r.high}`); if (r.mid) p.push(`<b>Mid</b>: ${r.mid}`); if (r.low) p.push(`<b>L</b>: ${r.low}`);
+          if (p.length) tipParts.push(p.join(" "));
+        } else if (metric === "genres") {
+          const g = wm.genres;
+          const p = []; const shortG = { "Science Fiction": "Sci-Fi", "Documentary": "Doc", "Animation": "Anim", "Adventure": "Adv", "Family": "Fam", "History": "Hist", "Romance": "Rom", "Thriller": "Thr", "Mystery": "Mys" }; topGN.forEach(gn => { if (g.buckets[gn]) p.push(`<b>${shortG[gn] || gn.substring(0,4)}</b>: ${g.buckets[gn]}`); });
+          if (p.length) tipParts.push(p.join(", "));
+        }
+        const tip = tipParts.join("<br>");
+        const stack = buildWeeklyStack(count, wm, metric, max, 72, topGN, isTop);
+        bars += `<div class="lbe-ds-wk-bar-col lbe-ds-wk-stacked${isTop ? " lbe-ds-peak" : ""}" style="height:${Math.max(h, count > 0 ? 2 : 0)}px" ><div class="lbe-tooltip">${tip}</div>${stack}</div>`;
+      } else {
+        const range = weekDateRange(w + 1, parseInt(year, 10));
+          const tip = `<b>Week ${w + 1}</b> (${range})<br>${count} ${count === 1 ? "film" : "films"}`;
+        const peakClass = isTop ? (metric === "total" ? " lbe-ds-wk-top" : " lbe-ds-wk-top") : "";
+        bars += `<div class="lbe-ds-wk-bar-col${peakClass}" style="height:${Math.max(h, count > 0 ? 2 : 0)}px" ><div class="lbe-tooltip">${tip}</div></div>`;
+      }
     }
+
     const topLabel = stats.maxWeekly > 0
       ? `<span class="lbe-ds-wkly-peak"><b>${stats.maxWeekly}</b> films · Week ${stats.mostWatchedWeekIdx + 1} · ${stats.mostWatchedWeekRange}</span>`
       : "";
@@ -948,37 +1233,97 @@
       <div class="lbe-ds-wkly-hdr"><span class="lbe-ds-wk-ttl">Films by week</span>${topLabel}</div>
       <div class="lbe-ds-wkly-bars">${bars}</div>
       <div class="lbe-ds-wkly-lbl"><span>Jan</span><span>Apr</span><span>Jul</span><span>Oct</span><span></span></div>
+      <div class="lbe-ds-leg">${metricLegendHTML(metric, topGN)}</div>
     </div>`;
   }
 
-  function buildYearlyDayOfWeekHTML(stats) {
+  function buildWeeklyStack(count, wm, metric, maxVal, heightUnit, topGN, isTop) {
+    if (count === 0) return "";
+    const totalH = Math.round((count / maxVal) * heightUnit);
+    let parts = [];
+    if (metric === "new_vs_rewatch") {
+      const rw = wm.rewatchCount || 0;
+      const nw = count - rw;
+      parts = [
+        { val: nw, color: METRIC_COLORS.new_vs_rewatch.new },
+        { val: rw, color: METRIC_COLORS.new_vs_rewatch.rewatch },
+      ];
+    } else if (metric === "activity") {
+      const a = wm.activity;
+      parts = [
+        { val: a.neither, color: METRIC_COLORS.activity.neither },
+        { val: a.liked, color: METRIC_COLORS.activity.liked },
+        { val: a.reviewed, color: METRIC_COLORS.activity.reviewed },
+        { val: a.both, color: METRIC_COLORS.activity.both },
+      ];
+    } else if (metric === "ratings") {
+      const r = wm.ratings;
+      parts = [
+        { val: r.high, color: METRIC_COLORS.ratings.high },
+        { val: r.mid, color: METRIC_COLORS.ratings.mid },
+        { val: r.low, color: METRIC_COLORS.ratings.low },
+        { val: r.unrated, color: METRIC_COLORS.ratings.unrated },
+      ];
+    } else if (metric === "genres") {
+      const g = wm.genres;
+      (topGN || []).forEach((gn, idx) => {
+        parts.push({ val: g.buckets[gn] || 0, color: METRIC_COLORS.genres[idx % METRIC_COLORS.genres.length] });
+      });
+      parts.push({ val: g.other, color: GENRE_OTHER_COLOR });
+    }
+    const nonZero = parts.filter(p => p.val > 0);
+    if (!nonZero.length) return "";
+    
+    let html = "", usedH = 0;
+    nonZero.forEach((p, idx) => {
+      let h = idx === nonZero.length - 1 ? totalH - usedH : Math.max(Math.round((p.val / count) * totalH), 1);
+      usedH += h;
+      
+      html += `<div class="lbe-ds-wk-seg" style="height:${h}px;background:${p.color};"></div>`;
+    });
+    return html;
+  }
+
+  function buildYearlyDayOfWeekHTML(stats, metric) {
     if (!stats.yearlyDayOfWeek) return "";
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-    // Reorder from Sun-first to Mon-first for display
     const reordered = [
-      stats.yearlyDayOfWeek[1], // Mon
-      stats.yearlyDayOfWeek[2], // Tue
-      stats.yearlyDayOfWeek[3], // Wed
-      stats.yearlyDayOfWeek[4], // Thu
-      stats.yearlyDayOfWeek[5], // Fri
-      stats.yearlyDayOfWeek[6], // Sat
-      stats.yearlyDayOfWeek[0], // Sun
+      stats.yearlyDayOfWeek[1], stats.yearlyDayOfWeek[2], stats.yearlyDayOfWeek[3],
+      stats.yearlyDayOfWeek[4], stats.yearlyDayOfWeek[5], stats.yearlyDayOfWeek[6], stats.yearlyDayOfWeek[0],
     ];
+    const reorderedMetrics = stats.dayOfWeekMetrics ? [
+      stats.dayOfWeekMetrics[1], stats.dayOfWeekMetrics[2], stats.dayOfWeekMetrics[3],
+      stats.dayOfWeekMetrics[4], stats.dayOfWeekMetrics[5], stats.dayOfWeekMetrics[6], stats.dayOfWeekMetrics[0],
+    ] : null;
     const max = Math.max(...reordered, 1);
+    const topGN = stats.topGenreNames || stats.topGenres.map(g => g.name);
+    const useStacked = metric !== "total" && reorderedMetrics;
+
     let bars = "";
     for (let d = 0; d < 7; d++) {
       const count = reordered[d];
-      const pct = Math.round((count / max) * 100);
       const isTop = count === max && count > 0;
-      bars += `<div class="lbe-ds-dow-row">
-        <span class="lbe-ds-dow-day">${DAYS[d]}</span>
-        <div class="lbe-ds-dow-track"><div class="lbe-ds-dow-fill${isTop ? " lbe-ds-dow-top" : ""}" style="width:${Math.max(pct, count > 0 ? 3 : 0)}%"></div></div>
-        ${isTop ? `<span class="lbe-ds-dow-count">${count} Films</span>` : ""}
-      </div>`;
+      if (useStacked && count > 0) {
+        const dm = reorderedMetrics[d];
+        const segments = metricHorizSegments(count, dm, metric, max, topGN);
+        bars += `<div class="lbe-ds-dow-row">
+          <span class="lbe-ds-dow-day">${DAYS[d]}</span>
+          <div class="lbe-ds-dow-track lbe-ds-dow-track-stacked${isTop ? " lbe-ds-peak" : ""}">${segments}</div>
+          ${isTop ? `<span class="lbe-ds-dow-count">${count} Films</span>` : ""}
+        </div>`;
+      } else {
+        const pct = Math.round((count / max) * 100);
+        bars += `<div class="lbe-ds-dow-row">
+          <span class="lbe-ds-dow-day">${DAYS[d]}</span>
+          <div class="lbe-ds-dow-track"><div class="lbe-ds-dow-fill${isTop ? " lbe-ds-dow-top" : ""}" style="width:${Math.max(pct, count > 0 ? 3 : 0)}%"></div></div>
+          ${isTop ? `<span class="lbe-ds-dow-count">${count} Films</span>` : ""}
+        </div>`;
+      }
     }
     return `<div class="lbe-ds-dow">
       <div class="lbe-ds-wk-ttl">Most watched day</div>
       <div class="lbe-ds-dow-chart">${bars}</div>
+      <div class="lbe-ds-leg" style="margin-top:8px">${metricLegendHTML(metric, topGN)}</div>
     </div>`;
   }
 
@@ -998,7 +1343,7 @@
       const pct = Math.round((m.dayOfWeek[d] / maxDay) * 100);
       const filmWord = m.dayOfWeek[d] === 1 ? "film" : "films";
       const isTop = m.dayOfWeek[d] === maxDay && maxDay > 0;
-      barsHTML += `<div class="lbe-ds-wk-c" data-tip="${DAYS_FULL[d]}: ${m.dayOfWeek[d]} ${filmWord}"><div class="lbe-ds-wk-b${isTop ? " lbe-ds-wk-b-top" : ""}" style="height:${Math.max(pct, m.dayOfWeek[d] > 0 ? 8 : 4)}%"></div><span class="lbe-ds-wk-l">${DAYS[d]}</span></div>`;
+      barsHTML += `<div class="lbe-ds-wk-c"><div class="lbe-tooltip"><b>${DAYS[d]}</b>: ${m.dayOfWeek[d]} ${filmWord}</div><div class="lbe-ds-wk-b${isTop ? " lbe-ds-wk-b-top" : ""}" style="height:${Math.max(pct, m.dayOfWeek[d] > 0 ? 8 : 4)}%"></div><span class="lbe-ds-wk-l">${DAYS[d]}</span></div>`;
     }
 
     const avgStr = m.avgRating !== null ? m.avgRating.toFixed(1) : "—";
@@ -1006,20 +1351,21 @@
     const expand = document.createElement("div");
     expand.className = "lbe-ds-expand";
     expand.innerHTML = `
-      <div class="lbe-ds-exp-h"><span><span class="lbe-ds-exp-m">${m.name}</span><span class="lbe-ds-exp-c">${m.total} ${m.total === 1 ? "film" : "films"}</span></span><span class="lbe-ds-exp-arr">&#9660;</span></div>
-      <div class="lbe-ds-exp-body">
-        <div class="lbe-ds-wk-ttl">Day of week</div>
-        <div class="lbe-ds-wk">${barsHTML}</div>
-        <div class="lbe-ds-m-meta">
-          <span>Average rating: <span>${avgStr}</span></span>
-          <span>Most watched: <span>${m.mostWatchedDay || "—"}</span></span>
-          <span>Rewatches: <span>${m.rewatchCount}</span></span>
-          <span>Liked: <span>${m.likedCount || 0}</span></span>
-          <span>Reviews: <span>${m.reviewCount}</span></span>
+      <div class="lbe-ds-exp-h"><span><span class="lbe-ds-exp-m">${m.name}</span><span class="lbe-ds-exp-c">${m.total} ${m.total === 1 ? "film" : "films"}</span></span><span class="lbe-ds-exp-arr">&#10005;</span></div>
+      <div class="lbe-ds-exp-body-wrap">
+        <div class="lbe-ds-exp-body">
+          <div class="lbe-ds-wk-ttl">Day of week</div>
+          <div class="lbe-ds-wk">${barsHTML}</div>
+          <div class="lbe-ds-m-meta">
+            <span>Average rating: <span>${avgStr}</span></span>
+            <span>Most watched: <span>${m.mostWatchedDay || "—"}</span></span>
+            <span>Rewatches: <span>${m.rewatchCount}</span></span>
+            <span>Liked: <span>${m.likedCount || 0}</span></span>
+            <span>Reviews: <span>${m.reviewCount}</span></span>
+          </div>
         </div>
       </div>`;
 
-    // Insert inside the monthly view after legend
     const monthlyView = container.querySelector('[data-view-id="monthly"]');
     const leg = monthlyView?.querySelector(".lbe-ds-leg");
     if (leg) leg.after(expand);
@@ -1068,3 +1414,4 @@
     });
   }, 300)).observe(document.body, { childList: true, subtree: true });
 })();
+

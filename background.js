@@ -616,7 +616,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     console.log("LBE: FETCH_DIARY_STATS received for", username, year);
     (async () => {
       try {
-        const cacheKey = `diary-stats:v7:${username}:${year}`;
+        const cacheKey = `diary-stats:v9:${username}:${year}`;
         // Check cache
         try {
           const c = await chrome.storage.local.get(cacheKey);
@@ -660,7 +660,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "CLEAR_DIARY_CACHE") {
     const { username, year } = msg;
     (async () => {
-      try { await chrome.storage.local.remove(`diary-stats:v7:${username}:${year}`); } catch (e) {}
+      try { await chrome.storage.local.remove(`diary-stats:v9:${username}:${year}`); } catch (e) {}
       sendResponse({ ok: true });
     })();
     return true;
@@ -945,6 +945,48 @@ function computeDiaryStats(entries, enriched, year) {
     .slice(0, 5)
     .map(([name, count]) => ({ name, count }));
 
+  // Helper: compute metric breakdowns for a set of entries
+  function computeMetricBreakdowns(groupEntries, enrichedMap, topGenreNames) {
+    const total = groupEntries.length;
+    // New vs rewatch
+    const rewatchCount = groupEntries.filter(e => e.isRewatch).length;
+    const newCount = total - rewatchCount;
+
+    // Activity breakdown
+    const likedOnly = groupEntries.filter(e => e.isLiked && !e.hasReview).length;
+    const reviewedOnly = groupEntries.filter(e => e.hasReview && !e.isLiked).length;
+    const both = groupEntries.filter(e => e.isLiked && e.hasReview).length;
+    const neither = total - likedOnly - reviewedOnly - both;
+
+    // Rating breakdown: high (>=4), mid (3-3.5), low (<3), unrated
+    const high = groupEntries.filter(e => e.rating !== null && e.rating >= 4).length;
+    const mid = groupEntries.filter(e => e.rating !== null && e.rating >= 3 && e.rating < 4).length;
+    const low = groupEntries.filter(e => e.rating !== null && e.rating < 3).length;
+    const unrated = groupEntries.filter(e => e.rating === null).length;
+
+    // Genre breakdown using top 5 genre names
+    const genreBuckets = {};
+    for (const gn of topGenreNames) genreBuckets[gn] = 0;
+    let otherGenre = 0;
+    for (const e of groupEntries) {
+      const data = enrichedMap[e.filmSlug];
+      const eGenres = (data?.genres || []).map(g => typeof g === "string" ? g : (g.name || ""));
+      let matched = false;
+      for (const gn of topGenreNames) {
+        if (eGenres.includes(gn)) { genreBuckets[gn]++; matched = true; break; }
+      }
+      if (!matched) otherGenre++;
+    }
+
+    return {
+      newCount,
+      rewatchCount,
+      activity: { liked: likedOnly, reviewed: reviewedOnly, both, neither },
+      ratings: { high, mid, low, unrated },
+      genres: { buckets: genreBuckets, other: otherGenre },
+    };
+  }
+
   // Monthly breakdown
   const monthly = [];
   for (let m = 0; m < 12; m++) {
@@ -986,6 +1028,16 @@ function computeDiaryStats(entries, enriched, year) {
   const activeMonths = monthly.filter(m => m.total > 0).length || 1;
   const perMonth = totalFilms / activeMonths;
 
+  // Top genre names for metric breakdowns
+  const topGenreNames = topGenres.map(g => g.name);
+
+  // Per-month metric breakdowns
+  const monthlyMetrics = [];
+  for (let m = 0; m < 12; m++) {
+    const monthEntries = entries.filter(e => parseInt(e.watchedDate.substring(5, 7), 10) - 1 === m);
+    monthlyMetrics.push(computeMetricBreakdowns(monthEntries, enriched, topGenreNames));
+  }
+
   // Yearly day-of-week aggregate
   const yearlyDayOfWeek = [0, 0, 0, 0, 0, 0, 0]; // Sun=0 .. Sat=6
   for (const e of entries) {
@@ -997,21 +1049,40 @@ function computeDiaryStats(entries, enriched, year) {
   const mostWatchedDay = maxYearlyDay > 0 ? DAYS[mostWatchedDayIdx] : null;
   const mostWatchedDayCount = maxYearlyDay;
 
+  // Per-day-of-week metric breakdowns (Sun=0..Sat=6)
+  const dayOfWeekMetrics = [];
+  for (let d = 0; d < 7; d++) {
+    const dayEntries = entries.filter(e => {
+      const dt = new Date(e.watchedDate + "T12:00:00");
+      return !isNaN(dt) && dt.getDay() === d;
+    });
+    dayOfWeekMetrics.push(computeMetricBreakdowns(dayEntries, enriched, topGenreNames));
+  }
+
   // Weekly histogram (week 1-53)
   const weekly = [];
   for (let w = 0; w < 53; w++) weekly.push(0);
+  // Bucket entries into weeks
+  const weeklyEntries = [];
+  for (let w = 0; w < 53; w++) weeklyEntries.push([]);
   for (const e of entries) {
     const d = new Date(e.watchedDate + "T12:00:00");
     if (isNaN(d)) continue;
-    // ISO week number calculation
     const jan1 = new Date(d.getFullYear(), 0, 1);
     const dayOfYear = Math.floor((d - jan1) / 86400000) + 1;
     const weekNum = Math.ceil((dayOfYear + jan1.getDay()) / 7);
     const idx = Math.min(Math.max(weekNum - 1, 0), 52);
     weekly[idx]++;
+    weeklyEntries[idx].push(e);
   }
   const maxWeekly = Math.max(...weekly);
   const mostWatchedWeekIdx = weekly.indexOf(maxWeekly);
+
+  // Per-week metric breakdowns
+  const weeklyMetrics = [];
+  for (let w = 0; w < 53; w++) {
+    weeklyMetrics.push(computeMetricBreakdowns(weeklyEntries[w], enriched, topGenreNames));
+  }
 
   // Find the date range for a given week number
   function weekDateRange(weekNum, yr) {
@@ -1032,12 +1103,16 @@ function computeDiaryStats(entries, enriched, year) {
     totalHours,
     perMonth,
     topGenres,
+    topGenreNames,
     monthly,
+    monthlyMetrics,
     currentMonth,
     yearlyDayOfWeek,
+    dayOfWeekMetrics,
     mostWatchedDay,
     mostWatchedDayCount,
     weekly,
+    weeklyMetrics,
     maxWeekly,
     mostWatchedWeekIdx,
     mostWatchedWeekRange: weekDateRange(mostWatchedWeekIdx + 1, parseInt(year, 10)),

@@ -37,11 +37,21 @@ Shows a progress bar on list cards (activity feed, list pages) indicating how ma
 ### 📅 Diary Stats
 Adds an analytics panel to any user's diary page with three switchable views:
 
-**Monthly view** — Stacked bar chart showing films watched per month, split by new watches (graphite) and rewatches (gold). Click any month bar to expand a detail card showing day-of-week distribution, average rating, most watched day, rewatches, likes, and reviews for that month.
+**Monthly view** — Stacked bar chart showing films watched per month. Click any month bar to expand a detail card showing day-of-week distribution, average rating, most watched day, rewatches, likes, and reviews for that month.
 
 **Weekly view** — 52-bar histogram showing films watched per week across the year. The peak week is highlighted in blue with a label showing the count, week number, and date range.
 
 **Day of week view** — Horizontal bar chart showing total films watched per day of the week across the year. The peak day is highlighted in blue with a count label.
+
+**Metric dropdown** — A dropdown selector next to the view toggle lets you choose how bars are colored and segmented. Applies to all three views (Monthly, Weekly, Day):
+
+- **Total Films** (default) — Solid gray bars with the peak highlighted in blue
+- **New vs. Rewatch** — Stacks new films (gray) and rewatches (gold) within each bar
+- **Likes & Reviews** — Segments by liked (orange), reviewed (green), both (blue), and neither (gray)
+- **Rating Distribution** — Segments by high ≥4.0 (green), mid 3.0–3.5 (blue), low <3.0 (orange), and unrated (gray)
+- **Top Genres** — Segments by the year's top 5 genres (dynamically colored) plus "Other" (gray)
+
+The selected metric persists across page navigations and browser sessions. Legends and rich HTML tooltips (showing breakdowns) update dynamically to match the selected metric. Peak statistics (most watched month, week, day) are highlighted cleanly across the full bar.
 
 All views include:
 - Total films, average rating, films per month, rewatch count, total runtime (hours), liked count, review count
@@ -150,8 +160,9 @@ For **grid posters** (activity, lists) that may not have TMDB IDs in the DOM, it
 2. Sends `FETCH_DIARY_STATS` to **background.js** with username and year
 3. **background.js** paginates through `/username/films/diary/for/YYYY/page/N/`, parsing each `<tr class="diary-entry-row">` for: film slug, title, date, rating, rewatch/review/liked status
 4. For genres and runtime, each unique film slug is enriched: first scrape the Letterboxd page for the TMDB ID, then call TMDB API for genres (HTML scraping doesn't return genres since they're rendered client-side)
-5. Stats are computed: monthly/weekly/day-of-week breakdowns, top genres, total runtime, averages
+5. Stats are computed: monthly/weekly/day-of-week breakdowns, top genres, total runtime, averages. Per-group metric breakdowns (activity, ratings, genres, new vs. rewatch) are pre-computed for each month, week, and day-of-week bucket
 6. Cached in chrome.storage.local with 24h TTL; refresh button forces re-scrape
+7. The metric dropdown selection is persisted to `chrome.storage.sync` and restored on page load
 
 ---
 
@@ -250,7 +261,7 @@ All settings are in the popup (click the extension icon):
 Replace the files in the folder and click the **reload** button on `chrome://extensions/`. No reinstall needed.
 
 ### Cache Key Versioning
-Cache keys are prefixed with version numbers (`lbe5:`, `mal:v3:`, `diary-stats:v7:`, etc.). When changing data format, bump the version to auto-invalidate old cached entries.
+Cache keys are prefixed with version numbers (`lbe5:`, `mal:v3:`, `diary-stats:v9:`, etc.). When changing data format, bump the version to auto-invalidate old cached entries.
 
 ### CSS Class Prefix
 All injected CSS classes use the `lbe-` prefix to avoid conflicts with Letterboxd's own styles.
