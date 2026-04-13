@@ -873,9 +873,9 @@
     let barsHTML = "";
     for (let i = 0; i < 12; i++) {
       const m = stats.monthly[i];
-      const totalH = Math.round((m.total / maxMonthTotal) * 80);
-      const rwH = m.total > 0 ? Math.max(Math.round((m.rewatchCount / maxMonthTotal) * 80), m.rewatchCount > 0 ? 3 : 0) : 0;
-      const newH = Math.max(totalH - rwH, m.newCount > 0 ? 2 : 0);
+      const totalH = Math.round((m.total / maxMonthTotal) * 100);
+      const rwH = m.total > 0 ? Math.max(Math.round((m.rewatchCount / maxMonthTotal) * 100), m.rewatchCount > 0 ? 3 : 0) : 0;
+      const newH = m.total > 0 ? Math.max(totalH - rwH, 2) : 0;
       const rwText = m.rewatchCount === 0 ? "no rewatches" : m.rewatchCount === 1 ? "1 rewatch" : `${m.rewatchCount} rewatches`;
       const tip = `${MONTH_FULL[i]}: ${m.total} ${m.total === 1 ? "film" : "films"}, ${rwText}`;
 
@@ -937,7 +937,7 @@
     let bars = "";
     for (let w = 0; w < 53; w++) {
       const count = stats.weekly[w];
-      const h = Math.round((count / max) * 48);
+      const h = Math.round((count / max) * 72);
       const isTop = w === stats.mostWatchedWeekIdx;
       bars += `<div class="lbe-ds-wk-bar-col${isTop ? " lbe-ds-wk-top" : ""}" style="height:${Math.max(h, count > 0 ? 2 : 0)}px" data-tip="Week ${w + 1}: ${count} ${count === 1 ? "film" : "films"}"></div>`;
     }
@@ -997,7 +997,8 @@
     for (let d = 0; d < 7; d++) {
       const pct = Math.round((m.dayOfWeek[d] / maxDay) * 100);
       const filmWord = m.dayOfWeek[d] === 1 ? "film" : "films";
-      barsHTML += `<div class="lbe-ds-wk-c" data-tip="${DAYS_FULL[d]}: ${m.dayOfWeek[d]} ${filmWord}"><div class="lbe-ds-wk-b" style="height:${Math.max(pct, m.dayOfWeek[d] > 0 ? 8 : 4)}%"></div><span class="lbe-ds-wk-l">${DAYS[d]}</span></div>`;
+      const isTop = m.dayOfWeek[d] === maxDay && maxDay > 0;
+      barsHTML += `<div class="lbe-ds-wk-c" data-tip="${DAYS_FULL[d]}: ${m.dayOfWeek[d]} ${filmWord}"><div class="lbe-ds-wk-b${isTop ? " lbe-ds-wk-b-top" : ""}" style="height:${Math.max(pct, m.dayOfWeek[d] > 0 ? 8 : 4)}%"></div><span class="lbe-ds-wk-l">${DAYS[d]}</span></div>`;
     }
 
     const avgStr = m.avgRating !== null ? m.avgRating.toFixed(1) : "—";

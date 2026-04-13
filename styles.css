@@ -479,12 +479,22 @@
   font-size: 8px;
 }
 
+/* Chart view containers */
+.lbe-ds-view {
+  max-width: 850px;
+  margin: 0 auto;
+}
+.lbe-ds-expand {
+  max-width: 850px;
+  margin: 14px auto 0;
+}
+
 /* Monthly histogram */
 .lbe-ds-bars {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  height: 80px;
+  height: 90px;
 }
 .lbe-ds-col {
   flex: 1;
@@ -564,13 +574,15 @@
 .lbe-ds-lbl {
   display: flex;
   gap: 4px;
-  padding-top: 5px;
+  padding-top: 6px;
 }
 .lbe-ds-lbl span {
   flex: 1;
   text-align: center;
   font-size: 9px;
   color: #567;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 /* Legend */
@@ -592,7 +604,6 @@
 
 /* Expanded month section */
 .lbe-ds-expand {
-  margin-top: 14px;
   background: #1b2028;
   border: 1px solid #2c3440;
   border-radius: 6px;
@@ -634,8 +645,8 @@
 .lbe-ds-wk {
   display: flex;
   align-items: flex-end;
-  gap: 3px;
-  height: 40px;
+  gap: 4px;
+  height: 60px;
 }
 .lbe-ds-wk-c {
   flex: 1;
@@ -657,6 +668,8 @@
   transition: background 0.14s;
 }
 .lbe-ds-wk-c:hover .lbe-ds-wk-b { background: #6a8095; }
+.lbe-ds-wk-b.lbe-ds-wk-b-top { background: #40bcf4; }
+.lbe-ds-wk-c:hover .lbe-ds-wk-b-top { background: #5ccbff; }
 .lbe-ds-wk-l {
   font-size: 9px;
   color: #567;
@@ -728,7 +741,7 @@
 .lbe-ds-toggle {
   display: inline-flex;
   gap: 0;
-  margin-bottom: 12px;
+  margin-bottom: 24px;
   border: 1px solid #2c3440;
   border-radius: 4px;
   overflow: hidden;
@@ -774,14 +787,14 @@
 .lbe-ds-wkly-bars {
   display: flex;
   align-items: flex-end;
-  gap: 1px;
-  height: 56px;
+  gap: 1.5px;
+  height: 80px;
 }
 .lbe-ds-wk-bar-col {
   flex: 1;
   min-width: 0;
   background: #67758a;
-  border-radius: 1px 1px 0 0;
+  border-radius: 2px 2px 0 0;
   transition: background 0.14s;
   position: relative;
 }
@@ -790,6 +803,7 @@
 }
 .lbe-ds-wk-bar-col.lbe-ds-wk-top {
   background: #40bcf4;
+  box-shadow: 0 0 8px rgba(64, 188, 244, 0.25);
 }
 .lbe-ds-wk-bar-col::before {
   content: attr(data-tip);
@@ -813,9 +827,11 @@
 .lbe-ds-wkly-lbl {
   display: flex;
   justify-content: space-between;
-  padding-top: 5px;
+  padding-top: 6px;
   font-size: 9px;
   color: #567;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 /* Day of week (horizontal bars) */
@@ -825,8 +841,8 @@
 .lbe-ds-dow-chart {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-top: 10px;
 }
 .lbe-ds-dow-row {
   display: flex;
@@ -835,9 +851,9 @@
   height: 22px;
 }
 .lbe-ds-dow-day {
-  font-size: 10px;
+  font-size: 11px;
   color: #678;
-  width: 68px;
+  width: 72px;
   text-align: right;
   flex-shrink: 0;
 }
@@ -845,23 +861,24 @@
   flex: 1;
   height: 18px;
   background: transparent;
-  border-radius: 2px;
+  border-radius: 3px;
   overflow: hidden;
 }
 .lbe-ds-dow-fill {
   height: 100%;
   background: #67758a;
-  border-radius: 2px;
+  border-radius: 3px;
   min-width: 0;
   transition: background 0.14s;
 }
 .lbe-ds-dow-fill:hover { background: #8494a7; }
 .lbe-ds-dow-fill.lbe-ds-dow-top {
   background: #40bcf4;
+  box-shadow: 0 0 8px rgba(64, 188, 244, 0.25);
 }
 .lbe-ds-dow-count {
-  font-size: 10px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
   color: #def;
   white-space: nowrap;
   flex-shrink: 0;
