@@ -620,7 +620,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Check cache
         try {
           const c = await chrome.storage.local.get(cacheKey);
-          if (c[cacheKey] && Date.now() - c[cacheKey].ts < 3600000) {
+          if (c[cacheKey] && Date.now() - c[cacheKey].ts < 86400000) {
             console.log("LBE: diary stats — returning cached data");
             sendResponse({ ...c[cacheKey].data, cached: true, error: null });
             return;

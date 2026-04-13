@@ -48,7 +48,7 @@ All views include:
 - Top 5 genres with counts
 - Year navigation with ‹ › arrows
 - Refresh button to re-scrape diary data
-- Cached for 1 hour to avoid redundant scraping
+- Cached for 24 hours to avoid redundant scraping
 
 ---
 
@@ -58,6 +58,9 @@ All views include:
 <img width="1919" height="977" alt="image" src="https://github.com/user-attachments/assets/4662a1fd-88e8-4a6f-84b8-3d3830e92c54" />
 <img width="610" height="356" alt="image" src="https://github.com/user-attachments/assets/df5e131c-b63a-44a7-8076-ac875c73eba5" />
 <img width="1415" height="330" alt="image" src="https://github.com/user-attachments/assets/6d66036b-cda1-49f9-8213-ea6c4916ef30" />
+<img width="1919" height="983" alt="Diary Stats — Monthly view" src="https://github.com/user-attachments/assets/859e3a01-abda-4c76-8769-163cefa53f96" />
+<img width="1919" height="982" alt="Diary Stats — Weekly view" src="https://github.com/user-attachments/assets/bc348687-8eae-4fc2-b4fc-3073a5616c40" />
+<img width="1919" height="984" alt="Diary Stats — Day of week view" src="https://github.com/user-attachments/assets/3dbe0500-9c29-43ac-b5af-0156af3ea863" />
 
 ---
 
@@ -126,7 +129,7 @@ Injects into page:                  7. Diary page scrape + enrichment
 • Grid info cards                   • chrome.storage.local (24h)
 • Friends histogram                 • Per-user local cache (permanent)
 • List progress bars                • OMDb key rotation + exhaustion
-• Diary stats panel                 • Diary stats (1h TTL)
+• Diary stats panel                 • Diary stats (24h TTL)
 ```
 
 ### How Film Lookup Works
@@ -148,7 +151,7 @@ For **grid posters** (activity, lists) that may not have TMDB IDs in the DOM, it
 3. **background.js** paginates through `/username/films/diary/for/YYYY/page/N/`, parsing each `<tr class="diary-entry-row">` for: film slug, title, date, rating, rewatch/review/liked status
 4. For genres and runtime, each unique film slug is enriched: first scrape the Letterboxd page for the TMDB ID, then call TMDB API for genres (HTML scraping doesn't return genres since they're rendered client-side)
 5. Stats are computed: monthly/weekly/day-of-week breakdowns, top genres, total runtime, averages
-6. Cached in chrome.storage.local with 1h TTL; refresh button forces re-scrape
+6. Cached in chrome.storage.local with 24h TTL; refresh button forces re-scrape
 
 ---
 
@@ -200,12 +203,12 @@ Hover/visit a film
           → Saved to all cache layers
 
 Diary stats
-  → chrome.storage.local (1h TTL, per username+year)
+  → chrome.storage.local (24h TTL, per username+year)
     → Full diary scrape + TMDB enrichment
       → Saved to cache
 ```
 
-Once you've visited a film, revisiting it costs **zero API calls** — even months later. Diary stats are cached for 1 hour and can be manually refreshed.
+Once you've visited a film, revisiting it costs **zero API calls** — even months later. Diary stats are cached for 24 hours and can be manually refreshed.
 
 ---
 

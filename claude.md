@@ -137,7 +137,7 @@ In-memory Map (session) → chrome.storage.local (24h TTL) → API call
 
 ### Caching
 - Key: `diary-stats:v7:{username}:{year}`
-- TTL: 1 hour
+- TTL: 24 hours
 - Refresh button sends `CLEAR_DIARY_CACHE` then re-fetches
 - TMDB film data cached via existing `tmdb:{type}:{id}` keys (shared with ratings feature)
 
@@ -146,7 +146,7 @@ In-memory Map (session) → chrome.storage.local (24h TTL) → API call
 - Film enrichment: 1 Letterboxd scrape + 1 TMDB call per unique film (most cached from normal browsing)
 - Throttled: 150ms delay every 5 films during enrichment
 - Shows loading spinner during initial scan
-- Subsequent visits use cached stats (1h TTL)
+- Subsequent visits use cached stats (24h TTL)
 
 ## File Structure
 ```
