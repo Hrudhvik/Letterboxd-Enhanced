@@ -917,8 +917,9 @@
     _lastDiaryYear = year;
     console.log("LBE: diary stats — year:", year);
 
+    const s = await new Promise(r => chrome.storage.sync.get({ diaryStatsCollapsed: true }, r));
     const container = document.createElement("div");
-    container.className = "lbe-ds lbe-ds-collapsed";
+    container.className = "lbe-ds" + (s.diaryStatsCollapsed ? " lbe-ds-collapsed" : "");
     container.innerHTML = buildDiaryStatsLoading(year);
 
     let inserted = false;
@@ -955,7 +956,12 @@
 
     // Event delegation
     container.addEventListener("click", async (e) => {
-      if (e.target.closest(".lbe-ds-ttl")) { container.classList.toggle("lbe-ds-collapsed"); return; }
+      if (e.target.closest(".lbe-ds-ttl")) {
+        container.classList.toggle("lbe-ds-collapsed");
+        const isCollapsed = container.classList.contains("lbe-ds-collapsed");
+        chrome.storage.sync.set({ diaryStatsCollapsed: isCollapsed });
+        return;
+      }
 
       const expH = e.target.closest(".lbe-ds-exp-h");
       if (expH) {
