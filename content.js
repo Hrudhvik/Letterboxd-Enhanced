@@ -3,6 +3,542 @@
 (function () {
   "use strict";
 
+
+  // ── Activity Feed Controls Bootstrap (robust /activity/ support) ───────
+  (function activityFeedControlsBootstrap() {
+    const TYPES = {
+      all: "All activity",
+      watched: "Watched",
+      rewatched: "Rewatched",
+      listed: "Listed",
+      watchlist: "Watchlist",
+      liked: "Liked",
+      commented: "Comments",
+      replied: "Replies"
+    };
+
+    const FILTER_TYPES = Object.keys(TYPES).filter(t => t !== "all");
+    const DEFAULTS = { mutedFriends: {}, feedTypes: FILTER_TYPES, panelCollapsed: false, mutedSectionCollapsed: false, feedSectionCollapsed: false };
+    const FOLLOWING_CACHE_TTL = 24 * 60 * 60 * 1000;
+    const MIN_VISIBLE_AFTER_HIDE = 10;
+
+    let settings = null;
+    let observer = null;
+    let busy = false;
+    let fillBusy = false;
+    let followingLoaded = false;
+    const friendOptions = new Set();
+    const BAD_USER_SLUGS = new Set([
+      "activity", "film", "films", "list", "lists", "review", "reviews", "watchlist",
+      "members", "journal", "likes", "tags", "network", "diary", "search", "settings",
+      "apps", "pro", "about", "contact", "help", "sign-in", "create-account", "notifications",
+      "incoming", "you", "friends", "popular", "people", "crew", "cast", "stories", "video-store"
+    ]);
+
+    function extensionAlive() {
+      try { return !!chrome?.runtime?.id; } catch (e) { return false; }
+    }
+
+    function storageGet(area, defaults, cb) {
+      if (!extensionAlive()) return;
+      try { chrome.storage[area].get(defaults, cb); } catch (e) {}
+    }
+
+    function storageSet(area, data) {
+      if (!extensionAlive()) return;
+      try { chrome.storage[area].set(data); } catch (e) {}
+    }
+
+    function isActivityUrl() {
+      return location.pathname === "/activity/" || /^\/[^/]+\/activity\/?$/.test(location.pathname);
+    }
+
+    function text(el) {
+      return (el && el.textContent ? el.textContent : "").replace(/\s+/g, " ").trim();
+    }
+
+    function norm(v) {
+      return (v || "").trim().replace(/^@/, "").toLowerCase();
+    }
+
+    function esc(v) {
+      return String(v || "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]));
+    }
+
+    function uid() {
+      return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function typesOf(row) {
+      const t = ` ${text(row).toLowerCase()} `;
+      const types = new Set();
+      if (/\b(rewatched|watched again)\b/.test(t)) types.add("rewatched");
+      if (/\b(watched|logged)\b/.test(t)) types.add("watched");
+      if (/\b(replied|replied to)\b/.test(t)) types.add("replied");
+      if (/\b(commented|commented on)\b/.test(t)) types.add("commented");
+      if (/\badded\b/.test(t) && /\bwatchlist\b/.test(t)) types.add("watchlist");
+      if (/\bliked\b/.test(t)) types.add("liked");
+      if (/\blisted\b/.test(t) || (/\badded\b/.test(t) && /\blist\b/.test(t) && !/\bwatchlist\b/.test(t))) types.add("listed");
+      if (!types.size && /\b(reviewed|rated|followed|wrote a review)\b/.test(t)) types.add("all");
+      if (!types.size) types.add("all");
+      return [...types];
+    }
+
+    function looksLikeRow(el) {
+      if (!el || el.nodeType !== 1 || el.id === "lbe-activity-panel" || el.closest("#lbe-activity-panel")) return false;
+      const t = text(el);
+      if (t.length < 8 || t.length > 3500) return false;
+      const l = ` ${t.toLowerCase()} `;
+      return /\b(watched|rewatched|logged|added|listed|liked|reviewed|rated|followed|commented|replied)\b/.test(l) || l.includes(" wrote a review");
+    }
+
+    function activityActionCount(el) {
+      const m = (` ${text(el).toLowerCase()} `).match(/\b(watched|rewatched|logged|added|listed|liked|reviewed|rated|followed|commented|replied)\b/g);
+      return m ? m.length : 0;
+    }
+
+    function hasMultipleActivityChildren(el) {
+      if (!el || !el.children) return false;
+      const kids = [...el.children].filter(child => !child.closest("#lbe-activity-panel") && looksLikeRow(child));
+      if (kids.length > 1) return true;
+      return text(el).length > 1300 && activityActionCount(el) >= 3;
+    }
+
+    function simpleSlugFromLink(a) {
+      const m = (a?.getAttribute("href") || "").match(/^\/([^/?#]+)\/?$/);
+      const slug = m ? norm(m[1]) : "";
+      return slug && !BAD_USER_SLUGS.has(slug) && /^[a-z0-9_.-]{2,40}$/.test(slug) ? slug : "";
+    }
+
+    function userOf(row) {
+      const avatar = row.querySelector('a.avatar[href^="/"], a[class*="avatar"][href^="/"], a[href^="/"] img')?.closest('a[href^="/"]');
+      const avSlug = simpleSlugFromLink(avatar);
+      if (avSlug) return avSlug;
+
+      const lead = text(row).match(/^([A-Za-z0-9_.-]{2,40})\s+(watched|rewatched|liked|added|listed|reviewed|rated|followed|commented|replied|wrote|logged)\b/i);
+      if (lead) return norm(lead[1]);
+
+      for (const a of [...row.querySelectorAll('a[href^="/"]')]) {
+        const slug = simpleSlugFromLink(a);
+        if (slug) return slug;
+      }
+      return "";
+    }
+
+    function rowForActorLink(a) {
+      let best = a.closest("tr, li, article, .activity-row, .activity-item, .activity-entry, .activity-table-row, .activity-news-item, .stream-item, .activity-summary");
+      if (best && looksLikeRow(best) && !hasMultipleActivityChildren(best)) return best;
+
+      let cur = a.parentElement;
+      let candidate = null;
+      for (let i = 0; cur && cur !== document.body && i < 7; i++, cur = cur.parentElement) {
+        if (cur.id === "content" || cur.matches("main, ul, ol, table, tbody, .activity-stream, .activity-feed, .activity-list, .profile-activity, .col-main, .content-wrap")) break;
+        if (looksLikeRow(cur)) candidate = cur;
+        if (candidate && hasMultipleActivityChildren(cur.parentElement)) break;
+      }
+      return candidate && !hasMultipleActivityChildren(candidate) ? candidate : null;
+    }
+
+    function rows() {
+      const root = document.querySelector(".activity-stream, .activity-feed, .activity-list, .profile-activity, #content .col-main, main, #content") || document.body;
+      const out = new Set();
+      root.querySelectorAll('a[href^="/"]').forEach(a => {
+        const slug = simpleSlugFromLink(a);
+        if (!slug) return;
+        const row = rowForActorLink(a);
+        if (!row || !looksLikeRow(row)) return;
+        if (userOf(row) !== slug) return;
+        out.add(row);
+      });
+
+      // Fallback for rows where the actor profile link is missing but the text starts with the actor name.
+      root.querySelectorAll("tr, li, article, .activity-row, .activity-item, .activity-entry, .activity-news-item, .stream-item").forEach(el => {
+        if (looksLikeRow(el) && !hasMultipleActivityChildren(el)) out.add(el);
+      });
+      return [...out];
+    }
+
+    function migrateRule(user, rule) {
+      if (!rule) return [];
+      if (Array.isArray(rule.rules)) return rule.rules.filter(Boolean);
+      const hiddenTypes = Array.isArray(rule.hiddenTypes) ? rule.hiddenTypes : ["all"];
+      return hiddenTypes.map(type => ({ id: uid(), type, expiresAt: rule.expiresAt ?? null, createdAt: Date.now() }));
+    }
+
+    function cleanExpired() {
+      const now = Date.now();
+      let changed = false;
+      const muted = {};
+      for (const [user, rawRule] of Object.entries(settings.mutedFriends || {})) {
+        const before = migrateRule(user, rawRule);
+        const rules = before.filter(rule => rule.expiresAt === null || rule.expiresAt === undefined || rule.expiresAt > now);
+        if (rules.length) muted[user] = { rules };
+        if (rules.length !== before.length || !Array.isArray(rawRule?.rules)) changed = true;
+      }
+      if (changed) {
+        settings = { ...settings, mutedFriends: muted };
+        storageSet("sync", { activityFilters: settings });
+      }
+    }
+
+    function normalizeSettings(raw) {
+      const feedTypes = Array.isArray(raw?.feedTypes) ? raw.feedTypes.filter(t => FILTER_TYPES.includes(t)) : FILTER_TYPES;
+      return { ...DEFAULTS, ...(raw || {}), feedTypes: feedTypes.length ? feedTypes : FILTER_TYPES, mutedFriends: raw?.mutedFriends || {} };
+    }
+
+    function load(cb) {
+      storageGet("sync", { toggleActivityFilters: true, activityFilters: DEFAULTS }, data => {
+        if (!data || data.toggleActivityFilters === false) return;
+        settings = normalizeSettings(data.activityFilters);
+        cleanExpired();
+        cb();
+      });
+    }
+
+    function save(next) {
+      settings = normalizeSettings(next);
+      storageSet("sync", { activityFilters: settings });
+    }
+
+    function activeRulesFor(user) {
+      const rules = migrateRule(user, settings?.mutedFriends?.[user]);
+      const now = Date.now();
+      return rules.filter(rule => rule.expiresAt === null || rule.expiresAt === undefined || rule.expiresAt > now);
+    }
+
+    function rowMatchesFeedFilter(rowTypes) {
+      if (rowTypes.includes("all")) return true;
+      const enabled = new Set(settings.feedTypes || FILTER_TYPES);
+      return rowTypes.some(t => enabled.has(t));
+    }
+
+    function shouldHide(row) {
+      const rowTypes = (row.dataset.lbeActivityTypes || "").split(",").filter(Boolean);
+      const types = rowTypes.length ? rowTypes : typesOf(row);
+      if (!rowMatchesFeedFilter(types)) return true;
+      const user = row.dataset.lbeActivityUser || userOf(row);
+      if (!user) return false;
+      return activeRulesFor(user).some(rule => rule.type === "all" || types.includes(rule.type));
+    }
+
+    function getViewerUsername() {
+      const pathUser = location.pathname.match(/^\/([^/]+)\/activity\/?$/);
+      if (pathUser) return norm(pathUser[1]);
+      const followingLink = document.querySelector('a[href$="/following/"]');
+      const fm = (followingLink?.getAttribute("href") || "").match(/^\/([a-z0-9_.-]+)\/following\/?$/i);
+      if (fm) return norm(fm[1]);
+      const navLink = document.querySelector('a[href$="/films/"], a[href$="/diary/"], a[href$="/watchlist/"]');
+      const nm = (navLink?.getAttribute("href") || "").match(/^\/([a-z0-9_.-]+)\//i);
+      return nm ? norm(nm[1]) : "";
+    }
+
+    function findSidebarAnchor() {
+      const candidates = ["#content .sidebar", ".content-wrap .sidebar", "aside", ".sidebar", ".col-4", ".col-5"]
+        .flatMap(sel => [...document.querySelectorAll(sel)]);
+      return candidates.find(el => !el.closest("#lbe-activity-panel") && el.offsetWidth && el.offsetWidth < 520) || candidates[0] || document.querySelector("#content");
+    }
+
+    function durationLabel(expiresAt) {
+      if (expiresAt === null || expiresAt === undefined) return "forever";
+      const diff = expiresAt - Date.now();
+      if (diff <= 0) return "expired";
+      const mins = Math.round(diff / 60000);
+      if (mins < 60) return `${mins}m left`;
+      const hours = Math.round(mins / 60);
+      if (hours < 48) return `${hours}h left`;
+      const days = Math.round(hours / 24);
+      return `${days}d left`;
+    }
+
+    function renderMuted() {
+      const box = document.querySelector("#lbe-activity-panel .lbe-af-muted-list");
+      if (!box || !settings) return;
+      const entries = Object.entries(settings.mutedFriends || {}).flatMap(([user]) => activeRulesFor(user).map(rule => ({ user, rule })));
+      if (!entries.length) {
+        box.innerHTML = `<div class="lbe-af-empty">No muted friends.</div>`;
+        return;
+      }
+      box.innerHTML = entries.map(({ user, rule }) => `
+        <div class="lbe-af-muted-row">
+          <div><strong>${esc(user)}</strong><span>${esc(TYPES[rule.type] || rule.type)} · ${esc(durationLabel(rule.expiresAt))}</span></div>
+          <button type="button" data-lbe-unmute="${esc(user)}" data-lbe-rule-id="${esc(rule.id)}">Remove</button>
+        </div>`).join("");
+    }
+
+    function renderFriendSelect() {
+      const panel = document.querySelector("#lbe-activity-panel");
+      const select = panel?.querySelector("#lbe-af-user-select");
+      const options = [...new Set([...friendOptions].map(norm).filter(name => name && !BAD_USER_SLUGS.has(name) && /^[a-z0-9_.-]{2,40}$/.test(name)))].sort((a, b) => a.localeCompare(b));
+      if (select) {
+        const current = select.value;
+        select.innerHTML = followingLoaded
+          ? `<option value="">Select a friend…</option>${options.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("")}`
+          : `<option value="">Loading following…</option>`;
+        select.disabled = !followingLoaded || options.length === 0;
+        if (current && options.includes(current)) select.value = current;
+      }
+      const status = panel?.querySelector(".lbe-af-search-status");
+      if (status) status.textContent = followingLoaded ? `${options.length} following available` : "Loading following…";
+    }
+
+    async function loadFollowing() {
+      if (followingLoaded) return;
+      const username = getViewerUsername();
+      if (!username) { followingLoaded = true; renderFriendSelect(); return; }
+      const cacheKey = `lbe-af-following:v7:${username}`;
+      try {
+        if (!extensionAlive()) { followingLoaded = true; renderFriendSelect(); return; }
+        const cached = await chrome.storage.local.get(cacheKey);
+        const entry = cached?.[cacheKey];
+        if (entry?.ts && Date.now() - entry.ts < FOLLOWING_CACHE_TTL && Array.isArray(entry.names)) {
+          entry.names.forEach(n => friendOptions.add(n));
+          followingLoaded = true; renderFriendSelect(); return;
+        }
+      } catch (e) { followingLoaded = true; renderFriendSelect(); return; }
+
+      const names = new Set();
+      try {
+        for (let page = 1; page <= 12; page++) {
+          const url = `/${username}/following/${page > 1 ? `page/${page}/` : ""}`;
+          const res = await fetch(url, { credentials: "same-origin" });
+          if (!res.ok) break;
+          const html = await res.text();
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          const root = doc.querySelector("#content, main") || doc;
+          root.querySelectorAll("tr, li, .person-summary, .member-summary, .profile-mini-person, .member-table .table-person").forEach(block => {
+            const bt = text(block).toLowerCase();
+            if (!/followers?/.test(bt) && !/following\s+\d/.test(bt)) return;
+            const preferred = block.querySelector("h3 a[href^='/'], .name a[href^='/'], a.avatar[href^='/']") || block.querySelector('a[href^="/"]');
+            const slug = simpleSlugFromLink(preferred);
+            if (slug && slug !== username) names.add(slug);
+          });
+          if (!doc.querySelector('.paginate-nextprev .next, a.next, [rel="next"]')) break;
+        }
+        names.forEach(n => friendOptions.add(n));
+        try { await chrome.storage.local.set({ [cacheKey]: { names: [...names], ts: Date.now() } }); } catch (e) {}
+      } catch (e) {
+        console.warn("LBE: could not load following list", e);
+      } finally {
+        followingLoaded = true;
+        renderFriendSelect();
+      }
+    }
+
+    function selectedMuteTypes(panel) {
+      const checked = [...panel.querySelectorAll('[data-lbe-af-type]:checked')].map(input => input.value);
+      return checked.includes("all") || !checked.length ? ["all"] : checked.filter(t => t !== "all");
+    }
+
+    function renderFeedFilterChecks() {
+      const enabled = new Set(settings?.feedTypes || FILTER_TYPES);
+      return FILTER_TYPES.map(t => `<label class="lbe-af-check"><input type="checkbox" value="${t}" data-lbe-feed-type ${enabled.has(t) ? "checked" : ""}><span>${esc(TYPES[t])}</span></label>`).join("");
+    }
+
+    function injectPanel() {
+      if (document.getElementById("lbe-activity-panel")) return;
+      const collapsed = !!settings.panelCollapsed;
+      const mutedCollapsed = !!settings.mutedSectionCollapsed;
+      const feedCollapsed = !!settings.feedSectionCollapsed;
+      const panel = document.createElement("div");
+      panel.id = "lbe-activity-panel";
+      panel.className = `lbe-af-panel${collapsed ? " lbe-af-collapsed" : ""}`;
+      panel.innerHTML = `
+        <div class="lbe-af-head" role="button" tabindex="0" title="Collapse/expand enhanced filters">
+          <div><div class="lbe-af-title">Enhanced filters</div></div>
+          <button class="lbe-af-collapse" type="button" aria-label="Collapse panel">${collapsed ? "▾" : "▴"}</button>
+        </div>
+        <div class="lbe-af-body">
+          <section class="lbe-af-card${mutedCollapsed ? " lbe-af-section-collapsed" : ""}" data-lbe-section="muted">
+            <button class="lbe-af-card-head" type="button" data-lbe-section-toggle="muted" aria-expanded="${mutedCollapsed ? "false" : "true"}">
+              <span><b>Muted friends</b><small>Hide selected friends by activity.</small></span>
+              <span class="lbe-af-card-arrow">${mutedCollapsed ? "▾" : "▴"}</span>
+            </button>
+            <div class="lbe-af-card-body">
+              <label class="lbe-af-label" for="lbe-af-user-select">Friend</label>
+              <select id="lbe-af-user-select" class="lbe-af-select" disabled><option value="">Loading following…</option></select>
+              <div class="lbe-af-search-status">Loading following…</div>
+              <div class="lbe-af-label lbe-af-sub-label">Activity to mute</div>
+              <div class="lbe-af-grid lbe-af-type-grid">
+                ${Object.entries(TYPES).map(([k, v]) => `<label class="lbe-af-check"><input type="checkbox" value="${k}" data-lbe-af-type ${k === "all" ? "checked" : ""}><span>${esc(v)}</span></label>`).join("")}
+              </div>
+              <div class="lbe-af-form-row">
+                <label><span>Duration</span><select class="lbe-af-select" id="lbe-af-duration">
+                  <option value="10800000">3 hours</option><option value="86400000">1 day</option><option value="604800000" selected>1 week</option><option value="2592000000">1 month</option><option value="forever">Forever</option>
+                </select></label>
+                <button class="lbe-af-add-btn" type="button">Add mute</button>
+              </div>
+              <div class="lbe-af-error" aria-live="polite"></div>
+              <div class="lbe-af-list-head"><span>Active mutes</span><button class="lbe-af-reset" type="button" data-lbe-reset="muted">Reset muted</button></div>
+              <div class="lbe-af-muted-list"></div>
+            </div>
+          </section>
+
+          <section class="lbe-af-card${feedCollapsed ? " lbe-af-section-collapsed" : ""}" data-lbe-section="feed">
+            <button class="lbe-af-card-head" type="button" data-lbe-section-toggle="feed" aria-expanded="${feedCollapsed ? "false" : "true"}">
+              <span><b>Feed filter</b><small>Choose which activity types stay visible.</small></span>
+              <span class="lbe-af-card-arrow">${feedCollapsed ? "▾" : "▴"}</span>
+            </button>
+            <div class="lbe-af-card-body">
+              <div class="lbe-af-grid lbe-af-feed-grid">${renderFeedFilterChecks()}</div>
+              <button class="lbe-af-reset lbe-af-reset-feed" type="button" data-lbe-reset="feed">Reset feed filter</button>
+            </div>
+          </section>
+        </div>
+      `;
+      const host = findSidebarAnchor();
+      if (host && host !== document.querySelector("#content")) host.prepend(panel);
+      else { panel.classList.add("lbe-af-floating-fallback"); document.body.appendChild(panel); }
+
+      panel.addEventListener("change", e => {
+        const input = e.target.closest("[data-lbe-af-type]");
+        if (input) {
+          const all = panel.querySelector('[data-lbe-af-type][value="all"]');
+          if (input.value === "all" && input.checked) panel.querySelectorAll('[data-lbe-af-type]:not([value="all"])').forEach(el => { el.checked = false; });
+          else if (input.checked && all) all.checked = false;
+          return;
+        }
+        const feed = e.target.closest("[data-lbe-feed-type]");
+        if (feed) {
+          const selected = [...panel.querySelectorAll('[data-lbe-feed-type]:checked')].map(el => el.value).filter(t => FILTER_TYPES.includes(t));
+          save({ ...settings, feedTypes: selected.length ? selected : FILTER_TYPES });
+          refresh();
+        }
+      });
+
+      panel.addEventListener("click", e => {
+        const collapseBtn = e.target.closest(".lbe-af-collapse");
+        if (collapseBtn || (e.target.closest(".lbe-af-head") && !e.target.closest("button"))) {
+          const isCollapsed = !panel.classList.contains("lbe-af-collapsed");
+          panel.classList.toggle("lbe-af-collapsed", isCollapsed);
+          const btn = panel.querySelector(".lbe-af-collapse");
+          if (btn) btn.textContent = isCollapsed ? "▾" : "▴";
+          save({ ...settings, panelCollapsed: isCollapsed });
+          return;
+        }
+        const sectionToggle = e.target.closest("[data-lbe-section-toggle]");
+        if (sectionToggle) {
+          const sectionName = sectionToggle.dataset.lbeSectionToggle;
+          const card = sectionToggle.closest(".lbe-af-card");
+          const isCollapsed = !card.classList.contains("lbe-af-section-collapsed");
+          card.classList.toggle("lbe-af-section-collapsed", isCollapsed);
+          sectionToggle.setAttribute("aria-expanded", String(!isCollapsed));
+          const arrow = sectionToggle.querySelector(".lbe-af-card-arrow");
+          if (arrow) arrow.textContent = isCollapsed ? "▾" : "▴";
+          const key = sectionName === "feed" ? "feedSectionCollapsed" : "mutedSectionCollapsed";
+          save({ ...settings, [key]: isCollapsed });
+          return;
+        }
+        const reset = e.target.closest("[data-lbe-reset]");
+        if (reset) {
+          if (reset.dataset.lbeReset === "muted") save({ ...settings, mutedFriends: {} });
+          if (reset.dataset.lbeReset === "feed") save({ ...settings, feedTypes: FILTER_TYPES });
+          refresh();
+          return;
+        }
+        const add = e.target.closest(".lbe-af-add-btn");
+        if (add) {
+          const select = panel.querySelector("#lbe-af-user-select");
+          const error = panel.querySelector(".lbe-af-error");
+          const user = norm(select.value);
+          if (!user) { error.textContent = "Select a friend."; return; }
+          const duration = panel.querySelector("#lbe-af-duration").value;
+          const expiresAt = duration === "forever" ? null : Date.now() + parseInt(duration, 10);
+          let rules = activeRulesFor(user);
+          const typesToAdd = selectedMuteTypes(panel);
+
+          if (rules.some(r => r.type === "all") && !typesToAdd.includes("all")) {
+            error.textContent = "All activity is already muted for this friend.";
+            return;
+          }
+          if (typesToAdd.includes("all")) rules = rules.filter(r => r.type === "all");
+          const existing = new Set(rules.map(r => r.type));
+          const newTypes = typesToAdd.filter(t => !existing.has(t));
+          if (!newTypes.length) { error.textContent = "That mute already exists."; return; }
+          if (newTypes.includes("all")) rules = [];
+          newTypes.forEach(type => rules.push({ id: uid(), type, expiresAt, createdAt: Date.now() }));
+          save({ ...settings, mutedFriends: { ...(settings.mutedFriends || {}), [user]: { rules } } });
+          select.value = "";
+          panel.querySelectorAll('[data-lbe-af-type]').forEach(input => { input.checked = input.value === "all"; });
+          error.textContent = ""; renderFriendSelect(); refresh(); return;
+        }
+        const unmute = e.target.closest("[data-lbe-unmute]");
+        if (unmute) {
+          e.preventDefault(); e.stopPropagation();
+          const user = unmute.dataset.lbeUnmute;
+          const ruleId = unmute.dataset.lbeRuleId;
+          const muted = { ...(settings.mutedFriends || {}) };
+          const rules = activeRulesFor(user).filter(rule => rule.id !== ruleId);
+          if (rules.length) muted[user] = { rules }; else delete muted[user];
+          save({ ...settings, mutedFriends: muted });
+          refresh();
+        }
+      });
+      renderMuted(); renderFriendSelect(); loadFollowing();
+    }
+
+    function prepareRows() {
+      rows().forEach(row => {
+        row.dataset.lbeActivityRow = "1";
+        const rowTypes = typesOf(row);
+        row.dataset.lbeActivityType = rowTypes[0] || "all";
+        row.dataset.lbeActivityTypes = rowTypes.join(",");
+        row.dataset.lbeActivityUser = userOf(row);
+        row.classList.add("lbe-af-row");
+      });
+    }
+
+    function findLoadMoreButton() {
+      const candidates = [...document.querySelectorAll('button, a')];
+      return candidates.find(el => {
+        if (el.closest("#lbe-activity-panel")) return false;
+        const t = text(el).toLowerCase();
+        return /load older activity|load more|older activity|more activity/.test(t) && !el.disabled;
+      });
+    }
+
+    function fillAfterHide() {
+      if (fillBusy) return;
+      const allRows = [...document.querySelectorAll('[data-lbe-activity-row="1"]')];
+      const hidden = allRows.filter(r => r.classList.contains("lbe-activity-hidden")).length;
+      const visible = allRows.length - hidden;
+      if (!hidden || visible >= MIN_VISIBLE_AFTER_HIDE) return;
+      const btn = findLoadMoreButton();
+      if (!btn) return;
+      fillBusy = true;
+      setTimeout(() => {
+        try { btn.click(); } catch (e) {}
+        setTimeout(() => { fillBusy = false; refresh(); }, 1200);
+      }, 200);
+    }
+
+    function apply() {
+      document.querySelectorAll('[data-lbe-activity-row="1"]').forEach(row => row.classList.toggle("lbe-activity-hidden", shouldHide(row)));
+      renderMuted(); renderFriendSelect(); fillAfterHide();
+    }
+
+    function refresh() {
+      if (!isActivityUrl() || !settings || busy) return;
+      busy = true;
+      try { cleanExpired(); injectPanel(); prepareRows(); apply(); }
+      finally { busy = false; }
+    }
+
+    function start() {
+      if (!isActivityUrl()) return;
+      load(() => {
+        refresh(); setTimeout(refresh, 600); setTimeout(refresh, 1500);
+        if (!observer) {
+          observer = new MutationObserver(debounce(refresh, 300));
+          observer.observe(document.body, { childList: true, subtree: true });
+        }
+      });
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+    else start();
+  })();
+
+
   function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
   let _username = null;
@@ -138,10 +674,10 @@
     const t = (info.title || "").replace(/^Poster for\s*/i, "");
     let h = `<div class="lbe-ic-title">${t}</div>`;
 
-    // Merge scraped runtime/genres/contentRating from resp
-    const runtime = info.runtime || resp?.runtime || null;
-    const contentRating = info.contentRating || resp?.contentRating || null;
-    const genres = info.genres?.length ? info.genres : (resp?.genres || []);
+    // Prefer enriched background/TMDB metadata over Letterboxd DOM metadata.
+    const runtime = resp?.runtime || info.runtime || null;
+    const contentRating = resp?.contentRating || info.contentRating || null;
+    const genres = resp?.genres?.length ? resp.genres : (info.genres || []);
 
     const meta = [info.year, runtime, contentRating].filter(Boolean).join(" · ");
     if (meta) h += `<div class="lbe-ic-meta">${meta}</div>`;
@@ -165,7 +701,10 @@
   function overlayHTML(info, resp) {
     const t = (info.title || "").replace(/^Poster for\s*/i, "");
     let h = `<div class="lbe-ot">${t}</div>`;
-    const meta = [info.year, info.runtime, info.contentRating].filter(Boolean).join(" · ");
+    const runtime = resp?.runtime || info.runtime || null;
+    const contentRating = resp?.contentRating || info.contentRating || null;
+    const genres = resp?.genres?.length ? resp.genres : (info.genres || []);
+    const meta = [info.year, runtime, contentRating].filter(Boolean).join(" · ");
     if (meta) h += `<div class="lbe-om">${meta}</div>`;
     let lb = "";
     if (info.lbRating) lb = `<div class="lbe-lb"><span class="lbe-stars">${stars(info.lbRating, 10)}</span><span class="lbe-lbv">${info.lbRating.toFixed(1)}</span></div>`;
@@ -178,7 +717,7 @@
     if (resp?.mc?.score) ext += `<span class="lbe-er"><span class="lbe-b lbe-bmc">MC</span>${resp.mc.score}</span>`;
 
     if (lb || ext) h += `<div class="lbe-or">${lb}${ext ? `<div class="lbe-ext">${ext}</div>` : ""}</div>`;
-    if (info.genres?.length) h += `<div class="lbe-og">${info.genres.map(g => `<a class="lbe-gt" href="${g.href}">${g.name}</a>`).join("")}</div>`;
+    if (genres?.length) h += `<div class="lbe-og">${genres.map(g => g.href ? `<a class="lbe-gt" href="${g.href}">${g.name}</a>` : `<span class="lbe-gt">${g.name || g}</span>`).join("")}</div>`;
     return h;
   }
 
@@ -229,8 +768,37 @@
   }
 
   // ── Fetch ──────────────────────────────────────────────────────
+  let _lbeExtensionContextDead = false;
+
+  function runtimeAlive() {
+    if (_lbeExtensionContextDead) return false;
+    try { return typeof chrome !== "undefined" && !!chrome.runtime && !!chrome.runtime.id; }
+    catch (e) { _lbeExtensionContextDead = true; return false; }
+  }
+
+  function markExtensionContextDead(e) {
+    const msg = String(e?.message || e || "");
+    if (/Extension context invalidated|context invalidated|receiving end does not exist/i.test(msg)) {
+      _lbeExtensionContextDead = true;
+      return true;
+    }
+    return false;
+  }
+
+  async function safeRuntimeMessage(message) {
+    try {
+      if (!runtimeAlive()) return null;
+      return await chrome.runtime.sendMessage(message);
+    } catch (e) {
+      // Old content scripts can keep running briefly after reloading the unpacked extension.
+      // Ignore invalidated-context failures and stop future extension API calls from this page.
+      if (!markExtensionContextDead(e)) console.warn("LBE: runtime message failed", e);
+      return null;
+    }
+  }
+
   async function fetchRatings(info) {
-    return chrome.runtime.sendMessage({
+    return safeRuntimeMessage({
       type: "FETCH_RATINGS", title: info.title, year: info.year,
       username: getUsername(), filmSlug: info.filmSlug,
       tmdbId: info.tmdbId || null, imdbId: info.imdbId || null, tmdbType: info.tmdbType || "movie",
@@ -262,7 +830,7 @@
     // Friends histogram
     if (showFriendsHisto && info.filmSlug && !sb.querySelector(".lbe-fh")) {
       try {
-        const fr = await chrome.runtime.sendMessage({ type: "FETCH_FRIENDS_RATINGS", filmSlug: info.filmSlug, username: getUsername() || "hrudhvik" });
+        const fr = await safeRuntimeMessage({ type: "FETCH_FRIENDS_RATINGS", filmSlug: info.filmSlug, username: getUsername() || "hrudhvik" });
         if (fr && fr.count > 0) {
           const fPanel = buildFriendsHistogram(fr);
           // Insert after Letterboxd's native RATINGS section or after our panel
@@ -435,16 +1003,45 @@
   }
 
   // ── Metadata bar ───────────────────────────────────────────────
-  function metaBar() {
+  async function metaBar(infoArg = null) {
     if (document.querySelector(".lbe-mb")) return;
-    const info = getFilmInfo(); if (!info) return;
-    if (!info.runtime && !info.genres.length && !info.contentRating) return;
-    const bar = document.createElement("div"); bar.className = "lbe-mb";
-    if (info.runtime) bar.innerHTML += `<span class="lbe-mt lbe-mr">${info.runtime}</span>`;
-    if (info.contentRating) bar.innerHTML += `<span class="lbe-mt lbe-mc">${info.contentRating}</span>`;
-    info.genres.forEach(g => { bar.innerHTML += `<a class="lbe-mt lbe-mg" href="${g.href}">${g.name}</a>`; });
+    const info = infoArg || getFilmInfo(); if (!info) return;
+
+    const bar = document.createElement("div");
+    bar.className = "lbe-mb";
+
+    function render(resp = null) {
+      const runtime = resp?.runtime || info.runtime || null;
+      const contentRating = resp?.contentRating || info.contentRating || null;
+      const genres = resp?.genres?.length
+        ? resp.genres.map(g => typeof g === "string" ? { name: g, href: `/films/genre/${g.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}/` } : g)
+        : (info.genres || []);
+
+      if (!runtime && !contentRating && !genres.length) {
+        bar.remove();
+        return;
+      }
+
+      bar.innerHTML = "";
+      if (runtime) bar.innerHTML += `<span class="lbe-mt lbe-mr">${runtime}</span>`;
+      if (contentRating) bar.innerHTML += `<span class="lbe-mt lbe-mc">${contentRating}</span>`;
+      genres.forEach(g => {
+        if (g.href) bar.innerHTML += `<a class="lbe-mt lbe-mg" href="${g.href}">${g.name}</a>`;
+        else bar.innerHTML += `<span class="lbe-mt lbe-mg">${g.name || g}</span>`;
+      });
+    }
+
+    let resp = null;
+    try {
+      // Prefer TMDB metadata before inserting the bar, so the content rating does not pop in later.
+      resp = await fetchRatings(info);
+    } catch (e) {
+      resp = null;
+    }
+
+    render(resp);
     const h = document.querySelector("h1.headline-1") || document.querySelector("h1");
-    if (h) h.parentElement.insertBefore(bar, h.nextSibling);
+    if (h && bar.childNodes.length) h.parentElement.insertBefore(bar, h.nextSibling);
   }
 
   // ── List Progress ──────────────────────────────────────────────
@@ -645,7 +1242,7 @@
     console.log("LBE: review page — fetching friends histogram for", filmSlug, "user:", username);
 
     try {
-      const fr = await chrome.runtime.sendMessage({ type: "FETCH_FRIENDS_RATINGS", filmSlug, username });
+      const fr = await safeRuntimeMessage({ type: "FETCH_FRIENDS_RATINGS", filmSlug, username });
       console.log("LBE: review page — friends data:", fr);
       if (!fr || fr.count <= 0) return;
 
@@ -692,6 +1289,7 @@
   let _diaryStatsInjected = false;
   let _diaryExpandedMonth = null;
   let _lastDiaryMetric = "total";
+  let _lastDiaryView = "monthly";
   let _lastDiaryYear = null;
 
   // Metric color palettes
@@ -704,12 +1302,24 @@
   };
   const GENRE_OTHER_COLOR = "#3a4550";
 
-  // Load saved metric preference
-  chrome.storage.sync.get({ diaryMetric: "total" }, s => { _lastDiaryMetric = s.diaryMetric || "total"; });
+  function normalizeDiaryView(view) {
+    return ["monthly", "weekly", "day", "heatmap"].includes(view) ? view : "monthly";
+  }
+
+  // Load saved diary chart preferences.
+  safeSyncGet({ diaryMetric: "total", diaryView: "monthly" }, s => {
+    _lastDiaryMetric = s.diaryMetric || "total";
+    _lastDiaryView = normalizeDiaryView(s.diaryView);
+  });
 
   function saveMetricPref(metric) {
     _lastDiaryMetric = metric;
-    chrome.storage.sync.set({ diaryMetric: metric });
+    safeSyncSet({ diaryMetric: metric });
+  }
+
+  function saveDiaryViewPref(view) {
+    _lastDiaryView = normalizeDiaryView(view);
+    safeSyncSet({ diaryView: _lastDiaryView });
   }
 
   // ── Metric bar builders (shared across all views) ──────────────
@@ -917,7 +1527,7 @@
     _lastDiaryYear = year;
     console.log("LBE: diary stats — year:", year);
 
-    const s = await new Promise(r => chrome.storage.sync.get({ diaryStatsCollapsed: true }, r));
+    const s = await new Promise(r => safeSyncGet({ diaryStatsCollapsed: true }, r));
     const container = document.createElement("div");
     container.className = "lbe-ds" + (s.diaryStatsCollapsed ? " lbe-ds-collapsed" : "");
     container.innerHTML = buildDiaryStatsLoading(year);
@@ -959,7 +1569,7 @@
       if (e.target.closest(".lbe-ds-ttl")) {
         container.classList.toggle("lbe-ds-collapsed");
         const isCollapsed = container.classList.contains("lbe-ds-collapsed");
-        chrome.storage.sync.set({ diaryStatsCollapsed: isCollapsed });
+        safeSyncSet({ diaryStatsCollapsed: isCollapsed });
         return;
       }
 
@@ -1003,9 +1613,9 @@
 
       const togBtn = e.target.closest(".lbe-ds-tog-btn");
       if (togBtn) {
-        const view = togBtn.dataset.view;
-        container.querySelectorAll(".lbe-ds-tog-btn").forEach(b => b.classList.remove("lbe-ds-tog-active"));
-        togBtn.classList.add("lbe-ds-tog-active");
+        const view = normalizeDiaryView(togBtn.dataset.view);
+        saveDiaryViewPref(view);
+        container.querySelectorAll(".lbe-ds-tog-btn").forEach(b => b.classList.toggle("lbe-ds-tog-active", b.dataset.view === view));
         container.querySelectorAll(".lbe-ds-view").forEach(v => {
           v.style.display = v.dataset.viewId === view ? "" : "none";
         });
@@ -1013,7 +1623,7 @@
       }
 
       if (e.target.closest(".lbe-ds-refresh")) {
-        await chrome.runtime.sendMessage({ type: "CLEAR_DIARY_CACHE", username, year });
+        await safeRuntimeMessage({ type: "CLEAR_DIARY_CACHE", username, year });
         container.innerHTML = buildDiaryStatsLoading(year);
         _diaryExpandedMonth = null;
         await fetchAndRenderDiaryStats(container, username, year);
@@ -1036,7 +1646,7 @@
 
   async function fetchAndRenderDiaryStats(container, username, year) {
     try {
-      const resp = await chrome.runtime.sendMessage({ type: "FETCH_DIARY_STATS", username, year });
+      const resp = await safeRuntimeMessage({ type: "FETCH_DIARY_STATS", username, year });
       if (!resp || resp.error || !resp.stats) {
         container.innerHTML = buildDiaryStatsEmpty(year);
         _lastDiaryStats = null;
@@ -1062,6 +1672,9 @@
   }
 
   function buildDiaryStatsHTML(stats, year, metric) {
+    const activeView = normalizeDiaryView(_lastDiaryView);
+    const viewStyle = view => view === activeView ? "" : " style=\"display:none\"";
+    const activeClass = view => view === activeView ? " lbe-ds-tog-active" : "";
     const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const MONTH_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -1119,23 +1732,27 @@
           ${genresHTML ? `<div class="lbe-ds-genres">${genresHTML}</div>` : ""}
           <div class="lbe-ds-toggle-wrap">
             <div class="lbe-ds-toggle">
-              <button class="lbe-ds-tog-btn lbe-ds-tog-active" data-view="monthly">Monthly</button>
-              <button class="lbe-ds-tog-btn" data-view="weekly">Weekly</button>
-              <button class="lbe-ds-tog-btn" data-view="day">Day</button>
+              <button class="lbe-ds-tog-btn${activeClass("monthly")}" data-view="monthly">Monthly</button>
+              <button class="lbe-ds-tog-btn${activeClass("weekly")}" data-view="weekly">Weekly</button>
+              <button class="lbe-ds-tog-btn${activeClass("day")}" data-view="day">Day</button>
+              <button class="lbe-ds-tog-btn${activeClass("heatmap")}" data-view="heatmap">Heatmap</button>
             </div>
             <select class="lbe-ds-metric-select" title="Select chart dimension">${selectHTML}</select>
           </div>
           
-          <div class="lbe-ds-view" data-view-id="monthly">
+          <div class="lbe-ds-view" data-view-id="monthly"${viewStyle("monthly")}>
             <div class="lbe-ds-bars">${barsHTML}</div>
             <div class="lbe-ds-lbl">${labelsHTML}</div>
             <div class="lbe-ds-leg">${metricLegendHTML(metric, topGN)}</div>
           </div>
-          <div class="lbe-ds-view" data-view-id="weekly" style="display:none">
+          <div class="lbe-ds-view" data-view-id="weekly"${viewStyle("weekly")}>
             ${buildWeeklyHTML(stats, year, metric)}
           </div>
-          <div class="lbe-ds-view" data-view-id="day" style="display:none">
+          <div class="lbe-ds-view" data-view-id="day"${viewStyle("day")}>
             ${buildYearlyDayOfWeekHTML(stats, metric)}
+          </div>
+          <div class="lbe-ds-view" data-view-id="heatmap"${viewStyle("heatmap")}>
+            ${buildDiaryHeatmapHTML(stats, year)}
           </div>
         </div>
       </div>`;
@@ -1173,6 +1790,8 @@
     // Rebuild day-of-week view
     const dayView = container.querySelector('[data-view-id="day"]');
     if (dayView) dayView.innerHTML = buildYearlyDayOfWeekHTML(stats, metric);
+
+    // Heatmap is total-count based and does not change with the metric dropdown.
 
     // Keep expanded month open — no need to close it since metric change
     // only affects the bar visuals, not the expanded detail card
@@ -1333,6 +1952,55 @@
     </div>`;
   }
 
+  function buildDiaryHeatmapHTML(stats, year) {
+    const counts = stats.dailyCounts || {};
+    const max = Math.max(stats.maxDaily || 0, 1);
+    const yr = parseInt(year, 10);
+    const start = new Date(yr, 0, 1);
+    const end = new Date(yr, 11, 31);
+    const gridStart = new Date(start);
+    // Monday-first grid: move back to previous Monday.
+    const startDow = (gridStart.getDay() + 6) % 7;
+    gridStart.setDate(gridStart.getDate() - startDow);
+
+    const months = [];
+    let lastMonth = -1;
+    let cells = "";
+    const weeks = [];
+    let cursor = new Date(gridStart);
+    let weekIndex = 0;
+    while (cursor <= end || ((cursor.getDay() + 6) % 7) !== 0) {
+      const week = [];
+      for (let d = 0; d < 7; d++) {
+        const inYear = cursor.getFullYear() === yr;
+        const iso = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(cursor.getDate()).padStart(2, "0")}`;
+        const count = inYear ? (counts[iso] || 0) : 0;
+        const level = !inYear || count === 0 ? 0 : Math.min(5, Math.max(1, Math.ceil((count / max) * 5)));
+        if (inYear && cursor.getMonth() !== lastMonth) {
+          months.push({ label: cursor.toLocaleString(undefined, { month: "short" }), week: weekIndex });
+          lastMonth = cursor.getMonth();
+        }
+        const tipDate = cursor.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        week.push(`<span class="lbe-ds-heat-cell lbe-ds-heat-l${level}${inYear ? "" : " lbe-ds-heat-out"}"><span class="lbe-tooltip"><b>${tipDate}</b><br>${count} ${count === 1 ? "film" : "films"}</span></span>`);
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      weeks.push(`<div class="lbe-ds-heat-week">${week.join("")}</div>`);
+      weekIndex++;
+    }
+    const monthLabels = months.map(m => `<span style="grid-column:${m.week + 1}">${m.label}</span>`).join("");
+    return `<div class="lbe-ds-heat">
+      <div class="lbe-ds-wkly-hdr"><span class="lbe-ds-wk-ttl">Diary heatmap</span><span class="lbe-ds-wkly-peak"><b>${stats.maxDaily || 0}</b> max/day</span></div>
+      <div class="lbe-ds-heat-wrap">
+        <div class="lbe-ds-heat-months" style="grid-template-columns: repeat(${weeks.length}, 1fr)">${monthLabels}</div>
+        <div class="lbe-ds-heat-body">
+          <div class="lbe-ds-heat-days"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
+          <div class="lbe-ds-heat-grid">${weeks.join("")}</div>
+        </div>
+        <div class="lbe-ds-heat-legend"><span>Less</span><i class="lbe-ds-heat-cell lbe-ds-heat-l0"></i><i class="lbe-ds-heat-cell lbe-ds-heat-l1"></i><i class="lbe-ds-heat-cell lbe-ds-heat-l2"></i><i class="lbe-ds-heat-cell lbe-ds-heat-l3"></i><i class="lbe-ds-heat-cell lbe-ds-heat-l4"></i><i class="lbe-ds-heat-cell lbe-ds-heat-l5"></i><span>More</span></div>
+      </div>
+    </div>`;
+  }
+
   function renderMonthExpand(container, monthIdx) {
     container.querySelector(".lbe-ds-expand")?.remove();
     if (!_lastDiaryStats) return;
@@ -1380,12 +2048,42 @@
   }
 
   // ── Init ───────────────────────────────────────────────────────
+  function safeSyncGet(defaults, cb) {
+    try {
+      if (!runtimeAlive()) { cb?.(defaults); return false; }
+      chrome.storage.sync.get(defaults, result => {
+        try {
+          if (chrome.runtime?.lastError) { markExtensionContextDead(chrome.runtime.lastError); cb?.(defaults); return; }
+        } catch (e) { markExtensionContextDead(e); cb?.(defaults); return; }
+        cb?.(result || defaults);
+      });
+      return true;
+    } catch (e) {
+      markExtensionContextDead(e);
+      cb?.(defaults);
+      return false;
+    }
+  }
+
+  function safeSyncSet(data) {
+    try {
+      if (!runtimeAlive()) return false;
+      chrome.storage.sync.set(data, () => {
+        try { if (chrome.runtime?.lastError) markExtensionContextDead(chrome.runtime.lastError); } catch (e) { markExtensionContextDead(e); }
+      });
+      return true;
+    } catch (e) {
+      markExtensionContextDead(e);
+      return false;
+    }
+  }
+
   function init() {
-    chrome.storage.sync.get({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true, toggleDiaryStats: true }, s => {
+    safeSyncGet({ togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true, toggleDiaryStats: true }, s => {
       if (isFilmPage()) {
         const info = getFilmInfo();
         if (info) {
-          if (s.toggleMeta) metaBar();
+          if (s.toggleMeta) metaBar(info);
           if (s.togglePoster) injectPoster(info);
           if (s.toggleRatings || s.toggleFriendsHisto) injectSidebar(info, s.toggleFriendsHisto);
         }
@@ -1404,7 +2102,9 @@
   else init();
 
   let last = location.href;
-  new MutationObserver(debounce(() => {
+  let mainObserver = null;
+  mainObserver = new MutationObserver(debounce(() => {
+    if (!runtimeAlive()) { try { mainObserver?.disconnect(); } catch (e) {} return; }
     if (location.href !== last) {
       last = location.href;
       _reviewHistoInjected = false;
@@ -1415,9 +2115,10 @@
       return;
     }
     setupGrids();
-    chrome.storage.sync.get({ toggleListProgress: true }, s => {
+    safeSyncGet({ toggleListProgress: true }, s => {
       if (s.toggleListProgress) scanListProgress();
     });
-  }, 300)).observe(document.body, { childList: true, subtree: true });
+  }, 300));
+  mainObserver.observe(document.body, { childList: true, subtree: true });
 })();
 

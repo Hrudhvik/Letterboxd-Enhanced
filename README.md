@@ -1,10 +1,13 @@
 # 🎬 Letterboxd Enhanced
 
-A Chrome extension that enhances [Letterboxd](https://letterboxd.com/) with external ratings, a poster overlay, rearranged metadata, friends' rating histograms, list progress bars, and diary analytics.
+A Chrome extension that enhances [Letterboxd](https://letterboxd.com/) with external ratings, a poster overlay, rearranged metadata, friends' rating histograms, list progress bars, diary analytics, and activity feed filters.
 
 ![Chrome](https://img.shields.io/badge/Chrome-Manifest%20V3-green) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
+
+### Content ratings
+TMDB certifications are used for content ratings in the metadata bar, poster overlay, and grid info cards when available. Letterboxd-scraped ratings are only used as a fallback.
 
 ### 📊 Sidebar Ratings Panel
 Displays ratings from multiple sources in the sidebar of any film page:
@@ -26,13 +29,29 @@ Hover over the film poster on any film page to see a clean overlay with:
 On activity feeds, lists, watchlists, and profile pages — hover the ⓘ button on any poster thumbnail to see a pop-out info card with ratings and metadata. Data is fetched on-demand (only when you hover) to save API calls.
 
 ### 🏷️ Metadata Bar
-Moves runtime, content rating (PG, R, etc.), and genre tags directly under the film title for quick scanning. Themes, studios, and other non-genre data are excluded.
+Moves runtime, content rating (PG, R, etc.), and genre tags directly under the film title for quick scanning. The bar prefers TMDB metadata before rendering so content ratings do not pop in after the rest of the metadata. Themes, studios, and other non-genre data are excluded.
 
 ### 👥 Friends Rating Histogram
 Scrapes your friends' ratings for each film and displays a histogram with average score — similar to Letterboxd's own ratings section but for your friends circle.
 
 ### 📈 List Progress Bars
 Shows a progress bar on list cards (activity feed, list pages) indicating how many films you've watched out of the total.
+
+
+### 🧹 Enhanced Activity Filters
+Adds a compact activity-feed sidebar panel styled to sit alongside Letterboxd's native Activity Filters box. The panel has two separately collapsible sections:
+
+- **Muted friends** — Pick a friend from your following list, choose specific activity types, choose a duration, and add a temporary mute. Duplicate mute rules are blocked. Expired rules are removed individually without clearing the friend’s other active rules.
+- **Feed filter** — Choose which activity types remain visible in the feed: watched, rewatched, listed, watchlist, liked, comments, and replies.
+
+The main panel and both inner sections remember their collapsed/expanded state. When filtering hides too many rows, the extension attempts to click Letterboxd’s “Load older activity” button to keep the visible feed filled.
+
+### 🎛️ Enhanced Filters
+Adds a compact Activity-page sidebar panel with two controls:
+- **Muted friends** — choose a followed account, select activity types to mute, and set a duration. Duplicate mute rules are blocked, expired rules are removed individually, and the activity-type checkboxes reset after each successful add.
+- **Feed filter** — choose which activity types remain visible in the activity feed.
+
+The panel and each internal section are collapsible, and their last collapsed/expanded states are remembered. When hidden rows leave the feed sparse, the extension tries to load older activity to fill the page.
 
 ### 📅 Diary Stats
 Adds an analytics panel to any user's diary page with three switchable views:
@@ -43,6 +62,8 @@ Adds an analytics panel to any user's diary page with three switchable views:
 
 **Day of week view** — Horizontal bar chart showing total films watched per day of the week across the year. The peak day is highlighted in blue with a count label.
 
+**Heatmap view** — Calendar-style daily heatmap showing how many films were watched on each day of the selected diary year, with a Letterboxd-matching dark green scale.
+
 **Metric dropdown** — A dropdown selector next to the view toggle lets you choose how bars are colored and segmented. Applies to all three views (Monthly, Weekly, Day):
 
 - **Total Films** (default) — Solid gray bars with the peak highlighted in blue
@@ -51,7 +72,7 @@ Adds an analytics panel to any user's diary page with three switchable views:
 - **Rating Distribution** — Segments by high ≥4.0 (green), mid 3.0–3.5 (blue), low <3.0 (orange), and unrated (gray)
 - **Top Genres** — Segments by the year's top 5 genres (dynamically colored) plus "Other" (gray)
 
-The selected metric persists across page navigations and browser sessions. Legends and rich HTML tooltips (showing breakdowns) update dynamically to match the selected metric. Peak statistics (most watched month, week, day) are highlighted cleanly across the full bar.
+The selected metric and the selected diary view persist across page navigations and browser sessions. Legends and rich HTML tooltips (showing breakdowns) update dynamically to match the selected metric. Peak statistics (most watched month, week, day) are highlighted cleanly across the full bar.
 
 All views include:
 - Total films, average rating, films per month, rewatch count, total runtime (hours), liked count, review count
@@ -283,3 +304,12 @@ This extension was inspired by and borrows ideas from these projects:
 ## License
 
 MIT
+
+
+## Performance notes
+Diary stats use a 24-hour cache. When that cache expires, the extension now tries an incremental refresh first: it scrapes the latest diary pages until it reaches entries already present in the cache, merges any new entries, enriches only missing films, and recomputes stats. Use the refresh button for a full re-scrape when needed.
+
+### Recent fixes
+
+- Diary Stats remembers the selected view and the heatmap scales to the available stats width without horizontal scrolling.
+- Content scripts now guard Chrome extension API calls after extension reloads, avoiding noisy `Extension context invalidated` errors from stale pages.

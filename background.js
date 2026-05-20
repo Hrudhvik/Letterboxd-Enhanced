@@ -3,9 +3,35 @@
 
 let OMDB_KEYS = [];
 let TMDB_API_KEY = "";
+const DEFAULT_RATING_COUNTRIES = ["US", "GB", "IN", "CA", "AU"];
 let keyStats = {};
 
 function parseOmdbKeys(raw) { return (raw || "").split(/[,\n]+/).map(k => k.trim()).filter(k => k.length > 0 && k !== "YOUR_OMDB_API_KEY"); }
+function pickCertificationFromTmdb(data, tmdbType = "movie") {
+  const results = tmdbType === "tv" ? data?.content_ratings?.results : data?.release_dates?.results;
+  if (!Array.isArray(results)) return null;
+
+  function ratingFor(entry) {
+    if (!entry) return null;
+    if (tmdbType === "tv") {
+      const rating = (entry.rating || "").trim();
+      return rating || null;
+    }
+    const releases = Array.isArray(entry.release_dates) ? entry.release_dates : [];
+    const cert = releases.map(r => (r.certification || "").trim()).find(Boolean);
+    return cert || null;
+  }
+
+  for (const country of DEFAULT_RATING_COUNTRIES) {
+    const rating = ratingFor(results.find(r => r.iso_3166_1 === country));
+    if (rating) return rating;
+  }
+  for (const entry of results) {
+    const rating = ratingFor(entry);
+    if (rating) return rating;
+  }
+  return null;
+}
 function getOmdbKey() {
   const now = Date.now(), today = new Date().toDateString();
   for (const k of Object.keys(keyStats)) { if (keyStats[k].day !== today) keyStats[k] = { used: 0, exhaustedUntil: 0, day: today }; }
@@ -17,17 +43,25 @@ function getOmdbKey() {
 function markUsed(k) { const d = new Date().toDateString(); if (!keyStats[k] || keyStats[k].day !== d) keyStats[k] = { used: 0, exhaustedUntil: 0, day: d }; keyStats[k].used++; }
 function markExhausted(k) { const d = new Date().toDateString(); if (!keyStats[k]) keyStats[k] = { used: 0, exhaustedUntil: 0, day: d }; const t = new Date(); t.setHours(24, 1, 0, 0); keyStats[k].exhaustedUntil = t.getTime(); }
 
-chrome.storage.sync.get({ omdbKey: "", tmdbKey: "" }, s => { OMDB_KEYS = parseOmdbKeys(s.omdbKey); TMDB_API_KEY = s.tmdbKey || ""; });
-chrome.storage.onChanged.addListener((c, a) => { if (a === "sync") { if (c.omdbKey?.newValue) { OMDB_KEYS = parseOmdbKeys(c.omdbKey.newValue); keyStats = {}; } if (c.tmdbKey?.newValue) TMDB_API_KEY = c.tmdbKey.newValue; } });
+chrome.storage.sync.get({ omdbKey: "", tmdbKey: "" }, s => {
+  OMDB_KEYS = parseOmdbKeys(s.omdbKey);
+  TMDB_API_KEY = s.tmdbKey || "";
+});
+chrome.storage.onChanged.addListener((c, a) => {
+  if (a === "sync") {
+    if (c.omdbKey) { OMDB_KEYS = parseOmdbKeys(c.omdbKey.newValue || ""); keyStats = {}; }
+    if (c.tmdbKey) TMDB_API_KEY = c.tmdbKey.newValue || "";
+  }
+});
 
 // ── Cache ────────────────────────────────────────────────────────
 async function getLocal(user, slug) {
   if (!user || !slug) return null;
-  try { const s = await chrome.storage.local.get(`lbe5:${user}:${slug}`); return s[`lbe5:${user}:${slug}`] || null; } catch (e) { return null; }
+  try { const s = await chrome.storage.local.get(`lbe12:${user}:${slug}`); return s[`lbe12:${user}:${slug}`] || null; } catch (e) { return null; }
 }
 async function setLocal(user, slug, data) {
   if (!user || !slug) return;
-  try { await chrome.storage.local.set({ [`lbe5:${user}:${slug}`]: { ...data, ts: Date.now() } }); } catch (e) {}
+  try { await chrome.storage.local.set({ [`lbe12:${user}:${slug}`]: { ...data, ts: Date.now() } }); } catch (e) {}
 }
 const mem = new Map(), TTL = 86400000;
 async function cached(key, fn) {
@@ -125,7 +159,8 @@ async function scrapeLetterboxdPage(filmSlug) {
 async function tmdbById(tmdbId, tmdbType = "movie") {
   if (!TMDB_API_KEY || !tmdbId) return null;
   try {
-    const r = await fetch(`https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`);
+    const append = tmdbType === "tv" ? "external_ids,content_ratings" : "external_ids,release_dates";
+    const r = await fetch(`https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=${append}`);
     const d = await r.json();
     if (d.success === false) return null;
     console.log("LBE: TMDB", tmdbId, "type:", tmdbType, "→", d.title, "imdb:", d.imdb_id || d.external_ids?.imdb_id);
@@ -141,6 +176,7 @@ async function tmdbById(tmdbId, tmdbType = "movie") {
       runtime,
       originalTitle: d.original_title || d.original_name || null,
       originalLanguage: d.original_language || null,
+      contentRating: pickCertificationFromTmdb(d, tmdbType),
     };
   } catch (e) { return null; }
 }
@@ -479,9 +515,9 @@ async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug, tmdbType =
   // Step 1: TMDB
   let tmdb = null;
   if (tmdbId) {
-    tmdb = await cached(`tmdb:${tmdbType}:${tmdbId}`, () => tmdbById(tmdbId, tmdbType));
+    tmdb = await cached(`tmdb:v12:${tmdbType}:${tmdbId}`, () => tmdbById(tmdbId, tmdbType));
   } else if (title) {
-    tmdb = await cached(`tmdb:s:${title}|${year}`, () => tmdbByTitle(title, year));
+    tmdb = await cached(`tmdb:v12:s:${title}|${year}`, () => tmdbByTitle(title, year));
   }
 
   // Step 2: Resolve IMDb ID
@@ -545,9 +581,9 @@ async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug, tmdbType =
     rt: rtScraped || omdb?.rt || null,
     mc: mcScraped || omdb?.mc || null,
     mal: mal,
-    genres: scrapedData?.genres?.length ? scrapedData.genres : (tmdb?.genres || []),
-    runtime: scrapedData?.runtime || tmdb?.runtime || null,
-    contentRating: scrapedData?.contentRating || null,
+    genres: tmdb?.genres?.length ? tmdb.genres : (scrapedData?.genres || []),
+    runtime: tmdb?.runtime || scrapedData?.runtime || null,
+    contentRating: tmdb?.contentRating || scrapedData?.contentRating || null,
   };
 
   
@@ -616,39 +652,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     console.log("LBE: FETCH_DIARY_STATS received for", username, year);
     (async () => {
       try {
-        const cacheKey = `diary-stats:v9:${username}:${year}`;
-        // Check cache
+        const cacheKey = `diary-stats:v11:${username}:${year}`;
+        let cachedData = null;
         try {
           const c = await chrome.storage.local.get(cacheKey);
-          if (c[cacheKey] && Date.now() - c[cacheKey].ts < 86400000) {
+          cachedData = c[cacheKey] || null;
+          if (cachedData && Date.now() - cachedData.ts < 86400000) {
             console.log("LBE: diary stats — returning cached data");
-            sendResponse({ ...c[cacheKey].data, cached: true, error: null });
+            sendResponse({ ...cachedData.data, cached: true, error: null });
             return;
           }
         } catch (e) {}
 
-        // Scrape diary pages
-        console.log("LBE: diary stats — starting scrape...");
-        const entries = await scrapeDiaryYear(username, year);
-        console.log("LBE: diary stats — scraped", entries.length, "entries");
+        let entries = [];
+        let enriched = {};
+
+        if (cachedData?.data?.entries?.length) {
+          console.log("LBE: diary stats — refreshing incrementally from cached data");
+          const cachedEntries = cachedData.data.entries || [];
+          const cachedEnriched = cachedData.data.enriched || {};
+          const freshEntries = await scrapeDiaryYearIncremental(username, year, cachedEntries);
+          entries = mergeDiaryEntries(cachedEntries, freshEntries);
+          enriched = await enrichDiaryEntries(entries, cachedEnriched);
+        } else {
+          console.log("LBE: diary stats — starting full scrape...");
+          entries = await scrapeDiaryYear(username, year);
+          enriched = await enrichDiaryEntries(entries);
+        }
+
+        console.log("LBE: diary stats — entries", entries.length);
         if (!entries.length) {
           sendResponse({ entries: [], stats: null, error: null, cached: false });
           return;
         }
 
-        // Enrich with genres/runtime from film pages (uses existing cache)
-        console.log("LBE: diary stats — enriching entries...");
-        const enriched = await enrichDiaryEntries(entries);
-
-        // Compute stats
         const stats = computeDiaryStats(entries, enriched, year);
         console.log("LBE: diary stats — computed:", stats.totalFilms, "films,", stats.rewatchCount, "rewatches,", stats.totalHours, "hours");
 
-        // Cache result
-        const result = { entries, stats };
+        const result = { entries, enriched, stats };
         try { await chrome.storage.local.set({ [cacheKey]: { data: result, ts: Date.now() } }); } catch (e) {}
 
-        sendResponse({ ...result, cached: false, error: null });
+        sendResponse({ ...result, cached: false, incremental: !!cachedData, error: null });
       } catch (err) {
         console.error("LBE: diary stats error", err);
         sendResponse({ entries: [], stats: null, error: err.message });
@@ -660,7 +704,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "CLEAR_DIARY_CACHE") {
     const { username, year } = msg;
     (async () => {
-      try { await chrome.storage.local.remove(`diary-stats:v9:${username}:${year}`); } catch (e) {}
+      try { await chrome.storage.local.remove([`diary-stats:v9:${username}:${year}`, `diary-stats:v11:${username}:${year}`]); } catch (e) {}
       sendResponse({ ok: true });
     })();
     return true;
@@ -847,16 +891,58 @@ async function scrapeDiaryYear(username, year) {
   console.log("LBE: diary scraped", allEntries.length, "entries for", year, "across", page, "pages");
   return allEntries;
 }
+async function scrapeDiaryYearIncremental(username, year, cachedEntries) {
+  const known = new Set((cachedEntries || []).map(diaryEntryKey));
+  const fresh = [];
+  let page = 1;
+  const maxPages = 10; // current diary changes should be near the top
+  const yearStr = String(year);
 
-async function enrichDiaryEntries(entries) {
+  while (page <= maxPages) {
+    const result = await scrapeDiaryPage(username, page, year);
+    if (!result.entries || result.entries.length === 0) break;
+
+    let hitKnown = false;
+    for (const entry of result.entries) {
+      if (!entry.watchedDate || entry.watchedDate.substring(0, 4) !== yearStr) continue;
+      const key = diaryEntryKey(entry);
+      if (known.has(key)) { hitKnown = true; continue; }
+      fresh.push(entry);
+    }
+
+    if (hitKnown || !result.hasNext) break;
+    page++;
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  console.log("LBE: diary incremental scrape found", fresh.length, "new/changed entries");
+  return fresh;
+}
+
+function diaryEntryKey(entry) {
+  return [entry.watchedDate || "", entry.filmSlug || entry.title || "", entry.rating ?? "", entry.isRewatch ? "rw" : "new", entry.hasReview ? "rev" : "", entry.isLiked ? "like" : ""].join("|");
+}
+
+function mergeDiaryEntries(oldEntries, freshEntries) {
+  const map = new Map();
+  [...(freshEntries || []), ...(oldEntries || [])].forEach(entry => {
+    const key = diaryEntryKey(entry);
+    if (!map.has(key)) map.set(key, entry);
+  });
+  return [...map.values()].sort((a, b) => String(b.watchedDate || "").localeCompare(String(a.watchedDate || "")));
+}
+
+
+async function enrichDiaryEntries(entries, existing = {}) {
   // Get unique film slugs
   const slugs = [...new Set(entries.map(e => e.filmSlug).filter(Boolean))];
-  const enriched = {};
+  const enriched = { ...(existing || {}) };
+  const todo = slugs.filter(slug => !enriched[slug] || (!enriched[slug].genres?.length && !enriched[slug].runtime));
 
-  console.log("LBE: enriching", slugs.length, "unique films...");
+  console.log("LBE: enriching", todo.length, "of", slugs.length, "unique films...");
 
-  for (let i = 0; i < slugs.length; i++) {
-    const slug = slugs[i];
+  for (let i = 0; i < todo.length; i++) {
+    const slug = todo[i];
     try {
       // Step 1: Get TMDB ID from Letterboxd page (this is fast/cached)
       const scraped = await cached(`scrape:v2:${slug}`, () => scrapeLetterboxdPage(slug));
@@ -866,7 +952,7 @@ async function enrichDiaryEntries(entries) {
       // Step 2: If genres missing (common), use TMDB API which reliably returns them
       if (genres.length === 0 && scraped?.tmdbId && TMDB_API_KEY) {
         const tmdbType = scraped.tmdbType || "movie";
-        const tmdb = await cached(`tmdb:${tmdbType}:${scraped.tmdbId}`, () => tmdbById(scraped.tmdbId, tmdbType));
+        const tmdb = await cached(`tmdb:v12:${tmdbType}:${scraped.tmdbId}`, () => tmdbById(scraped.tmdbId, tmdbType));
         if (tmdb) {
           if (tmdb.genres?.length) genres = tmdb.genres;
           if (!runtime && tmdb.runtime) runtime = tmdb.runtime;
@@ -1084,6 +1170,14 @@ function computeDiaryStats(entries, enriched, year) {
     weeklyMetrics.push(computeMetricBreakdowns(weeklyEntries[w], enriched, topGenreNames));
   }
 
+  // Daily counts for heatmap view
+  const dailyCounts = {};
+  for (const e of entries) {
+    if (!e.watchedDate) continue;
+    dailyCounts[e.watchedDate] = (dailyCounts[e.watchedDate] || 0) + 1;
+  }
+  const maxDaily = Math.max(...Object.values(dailyCounts), 0);
+
   // Find the date range for a given week number
   function weekDateRange(weekNum, yr) {
     const jan1 = new Date(yr, 0, 1);
@@ -1116,6 +1210,8 @@ function computeDiaryStats(entries, enriched, year) {
     maxWeekly,
     mostWatchedWeekIdx,
     mostWatchedWeekRange: weekDateRange(mostWatchedWeekIdx + 1, parseInt(year, 10)),
+    dailyCounts,
+    maxDaily,
   };
 }
 
