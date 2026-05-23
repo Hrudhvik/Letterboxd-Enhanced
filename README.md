@@ -44,7 +44,7 @@ Combines movie suggestions and search-result type selection into one compact Let
 - **Search type dropdown** — Choose All, Films, Reviews, Lists, Original Lists, Stories, Cast/Crew, Members, Tags, Journal, Podcasts, or Full-text.
 - **Exact Enter behavior** — Pressing Enter searches the text currently typed in the selected category using Letterboxd URLs such as `/search/films/avenger+infinity/?adult`.
 - **Suggestion clicks** — Clicking a movie suggestion searches Letterboxd Films for that movie title.
-- **Single popup toggle** — Controlled by the combined **Enhanced Search** setting.
+- **Single popup toggle** — Controlled by the combined **Enhanced Search Bar** setting.
 
 
 ### 🧹 Enhanced Activity Filters
@@ -54,13 +54,6 @@ Adds a compact activity-feed sidebar panel styled to sit alongside Letterboxd's 
 - **Feed filter** — Choose which activity types remain visible in the feed: watched, rewatched, listed, watchlist, liked, comments, and replies.
 
 The main panel and both inner sections remember their collapsed/expanded state. When filtering hides too many rows, the extension attempts to click Letterboxd’s “Load older activity” button to keep the visible feed filled.
-
-### 🎛️ Enhanced Filters
-Adds a compact Activity-page sidebar panel with two controls:
-- **Muted friends** — choose a followed account, select activity types to mute, and set a duration. Duplicate mute rules are blocked, expired rules are removed individually, and the activity-type checkboxes reset after each successful add.
-- **Feed filter** — choose which activity types remain visible in the activity feed.
-
-The panel and each internal section are collapsible, and their last collapsed/expanded states are remembered. When hidden rows leave the feed sparse, the extension tries to load older activity to fill the page.
 
 ### 📅 Diary Stats
 Adds an analytics panel to any user's diary page with three switchable views:
@@ -119,7 +112,7 @@ All views include:
 ### 2. Clone or Download
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/letterboxd-enhanced.git
+git clone https://github.com/Hrudhvik/letterboxd-enhanced.git
 ```
 
 Or download and unzip the repository.
