@@ -4,6 +4,466 @@
   "use strict";
 
 
+
+
+  // ── Header search suggestions + advanced search dropdown ──
+  (function headerSearchSuggestionsBootstrap() {
+    const MIN_QUERY = 1;
+    const DEBOUNCE_MS = 180;
+    const DEFAULTS = { toggleEnhancedSearch: true, toggleSearchSuggestions: true, toggleAdvancedSearchDropdown: true, lbeSearchCategory: "films" };
+    const CATEGORIES = [
+      ["all", "All", ""],
+      ["films", "Films", "films"],
+      ["reviews", "Reviews", "reviews"],
+      ["lists", "Lists", "lists"],
+      ["original-lists", "Original Lists", "original-lists"],
+      ["stories", "Stories", "stories"],
+      ["cast-crew", "Cast/Crew", "cast-crew"],
+      ["members", "Members", "members"],
+      ["tags", "Tags", "tags"],
+      ["articles", "Journal", "articles"],
+      ["podcasts", "Podcasts", "articles"],
+      ["full-text", "Full-text", "full-text"]
+    ];
+    const CATEGORY_PATHS = Object.fromEntries(CATEGORIES.map(([key, _label, path]) => [key, path]));
+    const CATEGORY_LABELS = Object.fromEntries(CATEGORIES.map(([key, label]) => [key, label]));
+    const CATEGORY_KEYS = new Set(CATEGORIES.map(([key]) => key));
+
+    let enhancedSearchEnabled = true;
+    let suggestionsEnabled = true;
+    let advancedEnabled = true;
+    let activeInput = null;
+    let panel = null;
+    let timer = null;
+    let requestSeq = 0;
+    let observer = null;
+    let currentCategory = "films";
+
+    let headerSearchContextDead = false;
+    function extensionAlive() {
+      if (headerSearchContextDead) return false;
+      try { return typeof chrome !== "undefined" && !!chrome?.runtime?.id; }
+      catch (e) { headerSearchContextDead = true; return false; }
+    }
+    function markHeaderContextDead(e) {
+      const msg = String(e?.message || e || "");
+      if (/Extension context invalidated|context invalidated|receiving end does not exist/i.test(msg)) {
+        headerSearchContextDead = true;
+        hidePanel();
+        return true;
+      }
+      return false;
+    }
+    function safeStorageGet(defaults, cb) {
+      try {
+        if (!extensionAlive()) { cb?.(defaults); return; }
+        chrome.storage.sync.get(defaults, result => {
+          try {
+            if (chrome.runtime?.lastError) { markHeaderContextDead(chrome.runtime.lastError); cb?.(defaults); return; }
+          } catch (e) { markHeaderContextDead(e); cb?.(defaults); return; }
+          cb?.(result || defaults);
+        });
+      } catch (e) { markHeaderContextDead(e); cb?.(defaults); }
+    }
+    function safeStorageSet(data) {
+      try { if (extensionAlive()) chrome.storage.sync.set(data, () => { try { if (chrome.runtime?.lastError) markHeaderContextDead(chrome.runtime.lastError); } catch (e) { markHeaderContextDead(e); } }); }
+      catch (e) { markHeaderContextDead(e); }
+    }
+    function safeSendMessage(message, cb) {
+      try {
+        if (!extensionAlive()) { cb?.({ error: "Extension context unavailable" }); return; }
+        chrome.runtime.sendMessage(message, resp => {
+          try {
+            if (chrome.runtime?.lastError) { markHeaderContextDead(chrome.runtime.lastError); cb?.({ error: chrome.runtime.lastError.message, tmdbConfigured: true }); return; }
+          } catch (e) { markHeaderContextDead(e); cb?.({ error: String(e), tmdbConfigured: true }); return; }
+          cb?.(resp);
+        });
+      } catch (e) { markHeaderContextDead(e); cb?.({ error: String(e), tmdbConfigured: true }); }
+    }
+    function esc(v) { return String(v || "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
+    function cleanQuery(v) { return String(v || "").trim().replace(/\s+/g, " "); }
+    function encodeSearchSegment(q) {
+      return encodeURIComponent(cleanQuery(q).toLowerCase()).replace(/%20/g, "+").replace(/%3A/gi, ":").replace(/%28/g, "(").replace(/%29/g, ")");
+    }
+
+    function textLikeSearchInput(input) {
+      if (!input || input.nodeType !== 1) return false;
+      if (input.tagName !== "INPUT") return false;
+      const type = (input.getAttribute("type") || "text").toLowerCase();
+      if (!["text", "search"].includes(type)) return false;
+      if (input.disabled || input.readOnly) return false;
+      return true;
+    }
+
+    function isVisibleSearchInput(input) {
+      if (!input || !input.isConnected) return false;
+      const r = input.getBoundingClientRect();
+      if (r.width < 28 || r.height < 16) return false;
+      const cs = window.getComputedStyle(input);
+      if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) === 0) return false;
+      return true;
+    }
+
+    function isHeaderSearchInput(input) {
+      if (!textLikeSearchInput(input) || !isVisibleSearchInput(input)) return false;
+      const idClassName = `${input.id || ""} ${input.className || ""} ${input.name || ""} ${input.placeholder || ""}`.toLowerCase();
+      const form = input.closest("form");
+      const formText = form ? `${form.id || ""} ${form.className || ""} ${form.getAttribute("action") || ""}`.toLowerCase() : "";
+      const wrapper = input.closest('header, .site-header, #header, .nav, .navbar, .main-nav, .search, .search-form, .searchform, .js-search, .search-box, .search-wrapper, [class*="search" i], [id*="search" i]');
+      const looksSearchy = /search|search-q|q\b|query/.test(idClassName) || /search/.test(formText) || !!wrapper;
+      const nearTop = input.getBoundingClientRect().top < 150;
+      return looksSearchy && nearTop;
+    }
+
+    function getCategory() {
+      return enhancedSearchEnabled && advancedEnabled && CATEGORY_KEYS.has(currentCategory) ? currentCategory : "films";
+    }
+
+    function categorySelectHtml() {
+      if (!advancedEnabled) return "";
+      return `<div class="lbe-search-category-row"><span>Search in</span><select class="lbe-search-category-select" aria-label="Letterboxd search category">${CATEGORIES.map(([v, label]) => `<option value="${v}" ${v === getCategory() ? "selected" : ""}>${label}</option>`).join("")}</select></div>`;
+    }
+
+
+    function refocusSearchInput(input) {
+      const target = input || activeInput;
+      if (!target || !target.isConnected) return;
+      try {
+        const len = target.value ? target.value.length : 0;
+        target.focus({ preventScroll: true });
+        if (typeof target.setSelectionRange === "function") target.setSelectionRange(len, len);
+        activeInput = target;
+        suppressNativeSuggestions(target);
+      } catch (e) {
+        try { target.focus(); activeInput = target; } catch (_) {}
+      }
+    }
+
+    function bindPanelControls(input) {
+      const p = ensurePanel();
+      const select = p.querySelector(".lbe-search-category-select");
+      if (!select || select.dataset.lbeBound === "1") return;
+      select.dataset.lbeBound = "1";
+      select.addEventListener("change", () => {
+        currentCategory = CATEGORY_KEYS.has(select.value) ? select.value : "films";
+        safeStorageSet({ lbeSearchCategory: currentCategory });
+        activeInput = input;
+        updateForInput(input, true);
+        // Native <select> takes focus after choosing an option. Put focus back
+        // in Letterboxd's search input so pressing Enter searches immediately.
+        setTimeout(() => refocusSearchInput(input), 0);
+        setTimeout(() => refocusSearchInput(input), 80);
+      });
+      select.addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+          const typed = cleanQuery(input?.value || activeInput?.value || "");
+          if (typed) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            goToLetterboxdSearch(typed, getCategory());
+          }
+          return;
+        }
+        e.stopPropagation();
+      }, true);
+      select.addEventListener("keyup", e => {
+        if (e.key === "Enter") {
+          const typed = cleanQuery(input?.value || activeInput?.value || "");
+          if (typed) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            goToLetterboxdSearch(typed, getCategory());
+          }
+        }
+      }, true);
+      select.addEventListener("mousedown", e => e.stopPropagation(), true);
+      select.addEventListener("click", e => e.stopPropagation(), true);
+    }
+
+    function ensurePanel() {
+      if (panel) return panel;
+      panel = document.createElement("div");
+      panel.id = "lbe-search-suggestions";
+      panel.hidden = true;
+      document.body.appendChild(panel);
+      panel.addEventListener("mousedown", e => {
+        if (!e.target.closest?.("select")) e.preventDefault();
+      });
+      return panel;
+    }
+
+    function visibleRect(el) {
+      if (!el || !el.isConnected) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) return null;
+      const cs = window.getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return null;
+      return r;
+    }
+
+    function positionPanel(input) {
+      const p = ensurePanel();
+      const r = visibleRect(input);
+      if (!r) { p.hidden = true; return; }
+      const viewportPadding = 10;
+      const width = Math.max(250, Math.min(340, Math.max(r.width, 250), window.innerWidth - viewportPadding * 2));
+      const left = Math.max(viewportPadding, Math.min(r.left, window.innerWidth - width - viewportPadding));
+      p.style.left = `${left + window.scrollX}px`;
+      p.style.top = `${r.bottom + window.scrollY + 8}px`;
+      p.style.width = `${width}px`;
+    }
+
+    function letterboxdSearchPath(query, category = "all") {
+      const q = cleanQuery(query);
+      const safeCategory = CATEGORY_KEYS.has(category) ? category : "films";
+      const pathPrefix = CATEGORY_PATHS[safeCategory] || "";
+      if (!q) return pathPrefix ? `/search/${pathPrefix}/?adult` : "/search/?adult";
+      const encoded = encodeSearchSegment(q);
+      return pathPrefix ? `/search/${pathPrefix}/${encoded}/?adult` : `/search/${encoded}/?adult`;
+    }
+
+    function goToLetterboxdSearch(query, category = getCategory()) {
+      const path = letterboxdSearchPath(query, category);
+      window.location.assign(`${window.location.origin}${path}`);
+    }
+
+    function filmSearchUrl(item) {
+      return letterboxdSearchPath(item.title || "", "films");
+    }
+
+    function hideNativeSuggestionOverlays(input) {
+      try {
+        const selectors = [
+          ".ui-autocomplete", ".ui-menu", ".ac_results", ".autocomplete", ".autocomplete-results", ".autocomplete-suggestions",
+          ".search-autocomplete", ".search-results", ".search-result", ".quick-search", ".quick-search-results", ".live-search-results",
+          ".js-search-results", ".search-menu", ".search-panel", ".suggestions", ".results"
+        ].join(",");
+        const ir = input?.getBoundingClientRect?.();
+        document.querySelectorAll(`${selectors}, [class*="autocomplete" i], [id*="autocomplete" i]`).forEach(el => {
+          if (!el || el.id === "lbe-search-suggestions" || el.closest?.("#lbe-search-suggestions")) return;
+          const r = el.getBoundingClientRect?.();
+          const nearInput = ir && r && r.width && r.height && Math.abs((r.top || 0) - (ir.bottom || 0)) < 140 && Math.abs((r.left || 0) - (ir.left || 0)) < 360;
+          const classText = `${el.id || ""} ${el.className || ""}`.toLowerCase();
+          const searchy = /autocomplete|suggest|result|quick-search|search-menu|search-panel/.test(classText);
+          if (nearInput || searchy) {
+            el.classList.add("lbe-native-search-suggestions-hidden");
+            el.setAttribute("aria-hidden", "true");
+          }
+        });
+      } catch (e) {}
+    }
+
+    function suppressNativeSuggestions(input) {
+      if (!enhancedSearchEnabled) return;
+      try {
+        input.setAttribute("autocomplete", "off");
+        input.setAttribute("aria-autocomplete", "none");
+        input.classList.add("lbe-search-input-active");
+        input.dataset.lbeSearchActive = "1";
+        const form = input.closest("form");
+        if (form) form.classList.add("lbe-search-native-hidden");
+        const wrapper = input.closest('.search, .search-form, .searchform, .js-search, .search-box, .search-wrapper, [class*="search" i], [id*="search" i]');
+        if (wrapper) wrapper.classList.add("lbe-search-native-hidden");
+        document.body.classList.add("lbe-search-suggestions-open");
+        setTimeout(() => hideNativeSuggestionOverlays(input), 0);
+        setTimeout(() => hideNativeSuggestionOverlays(input), 120);
+      } catch (e) {}
+    }
+
+    function hidePanel() {
+      if (panel) panel.hidden = true;
+      try { document.body.classList.remove("lbe-search-suggestions-open"); } catch (e) {}
+    }
+    function renderLoading(input) {
+      positionPanel(input);
+      const p = ensurePanel();
+      p.innerHTML = `${categorySelectHtml()}<div class="lbe-search-suggestion-state">Searching movies…</div>`;
+      p.hidden = false;
+      bindPanelControls(input);
+    }
+
+    function renderCategoryOnly(input) {
+      positionPanel(input);
+      const p = ensurePanel();
+      p.innerHTML = `${categorySelectHtml()}<div class="lbe-search-suggestion-state">Type a search and press Enter.</div>`;
+      p.hidden = false;
+      bindPanelControls(input);
+    }
+
+    function renderHelper(input) {
+      const query = cleanQuery(input?.value || "");
+      positionPanel(input);
+      const p = ensurePanel();
+      const label = CATEGORY_LABELS[getCategory()] || "selected category";
+      p.innerHTML = `${categorySelectHtml()}<button type="button" class="lbe-search-direct" data-query="${esc(query)}">Search ${esc(label)}${query ? ` for “${esc(query)}”` : ""}</button>`;
+      p.hidden = false;
+      bindPanelControls(input);
+      const btn = p.querySelector(".lbe-search-direct");
+      if (btn) btn.addEventListener("click", e => { e.preventDefault(); goToLetterboxdSearch(query, getCategory()); });
+    }
+
+    function renderResults(input, query, items, meta = {}) {
+      if (!suggestionsEnabled || input !== activeInput) return;
+      positionPanel(input);
+      const p = ensurePanel();
+      if (!query || query.trim().length < MIN_QUERY) return renderCategoryOnly(input);
+      if (!meta.tmdbConfigured) { p.innerHTML = `${categorySelectHtml()}<div class="lbe-search-suggestion-state">Add your TMDB key in the extension popup to enable movie suggestions.</div>`; p.hidden = false; bindPanelControls(input); return; }
+      if (meta.error) { p.innerHTML = `${categorySelectHtml()}<div class="lbe-search-suggestion-state">Could not load suggestions. Press Enter to search Letterboxd.</div>`; p.hidden = false; bindPanelControls(input); return; }
+      const direct = `<button type="button" class="lbe-search-direct" data-query="${esc(query)}">Search Letterboxd for “${esc(query)}”</button>`;
+      if (!items || !items.length) { p.innerHTML = `${categorySelectHtml()}${direct}<div class="lbe-search-suggestion-state">No movie suggestions found.</div>`; p.hidden = false; bindPanelControls(input); return; }
+      p.innerHTML = `${categorySelectHtml()}${direct}` + items.slice(0, 6).map(item => `
+        <button type="button" class="lbe-search-suggestion" data-url="${esc(filmSearchUrl(item))}">
+          <span class="lbe-search-suggestion-poster">${item.poster ? `<img src="${esc(item.poster)}" alt="">` : ""}</span>
+          <span class="lbe-search-suggestion-main">
+            <span class="lbe-search-suggestion-title">${esc(item.title)}</span>
+            <span class="lbe-search-suggestion-meta">${esc([item.year, item.rating].filter(Boolean).join(" · "))}</span>
+          </span>
+        </button>`).join("");
+      p.hidden = false;
+      bindPanelControls(input);
+      p.querySelectorAll(".lbe-search-suggestion").forEach(btn => {
+        btn.addEventListener("click", e => {
+          e.preventDefault(); e.stopPropagation();
+          const url = btn.dataset.url;
+          if (url) window.location.assign(`${window.location.origin}${url}`);
+        });
+      });
+      const directBtn = p.querySelector(".lbe-search-direct");
+      if (directBtn) directBtn.addEventListener("click", e => { e.preventDefault(); goToLetterboxdSearch(query, getCategory()); });
+    }
+
+    function shouldShowMovieSuggestions() {
+      const cat = getCategory();
+      return suggestionsEnabled && (cat === "all" || cat === "films");
+    }
+
+    function fetchSuggestions(input) {
+      const query = input.value.trim();
+      const seq = ++requestSeq;
+      suppressNativeSuggestions(input);
+      if (query.length < MIN_QUERY) return renderCategoryOnly(input);
+      if (!shouldShowMovieSuggestions()) return renderHelper(input);
+      const loadingTimer = setTimeout(() => { if (seq === requestSeq && input === activeInput) renderLoading(input); }, 320);
+      safeSendMessage({ type: "SEARCH_TMDB_SUGGESTIONS", query }, resp => {
+        clearTimeout(loadingTimer);
+        if (seq !== requestSeq) return;
+        if (resp?.error) return renderResults(input, query, [], { tmdbConfigured: resp.tmdbConfigured !== false, error: resp.error });
+        renderResults(input, query, resp?.results || [], resp || {});
+      });
+    }
+
+    function updateForInput(input, immediate = false) {
+      if (!input) return;
+      if (!enhancedSearchEnabled) { hidePanel(); return; }
+      clearTimeout(timer);
+      const run = () => shouldShowMovieSuggestions() ? fetchSuggestions(input) : renderHelper(input);
+      if (immediate) run(); else timer = setTimeout(run, DEBOUNCE_MS);
+    }
+
+    function bindInput(input) {
+      if (!isHeaderSearchInput(input)) return;
+      if (input.dataset.lbeSearchSuggestBound === "1") return;
+      input.dataset.lbeSearchSuggestBound = "1";
+      input.classList.add("lbe-advanced-search-input");
+
+      input.addEventListener("focus", () => { if (!enhancedSearchEnabled) return; activeInput = input; suppressNativeSuggestions(input); updateForInput(input, true); });
+      input.addEventListener("input", () => { if (!enhancedSearchEnabled) return; activeInput = input; suppressNativeSuggestions(input); updateForInput(input); });
+      input.addEventListener("keydown", e => {
+        if (!enhancedSearchEnabled) return;
+        const p = ensurePanel();
+        if (e.key === "Escape") p.hidden = true;
+        if (e.key === "ArrowDown" && !p.hidden) {
+          const first = p.querySelector(".lbe-search-direct, .lbe-search-suggestion, .lbe-search-category-select");
+          if (first) { e.preventDefault(); first.focus(); }
+        }
+        if (e.key === "Enter") {
+          const typed = input.value.trim();
+          if (typed) { e.preventDefault(); e.stopImmediatePropagation(); goToLetterboxdSearch(typed, getCategory()); }
+        }
+      }, true);
+    }
+
+    function handleSearchEnterEvent(e) {
+      if (!enhancedSearchEnabled || e.key !== "Enter") return false;
+      let input = null;
+      if (textLikeSearchInput(e.target) && isHeaderSearchInput(e.target)) {
+        input = e.target;
+      } else if (e.target?.closest?.("#lbe-search-suggestions")) {
+        input = activeInput;
+      }
+      if (!input || !isHeaderSearchInput(input)) return false;
+      const typed = cleanQuery(input.value);
+      if (!typed) return false;
+      activeInput = input;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      goToLetterboxdSearch(typed, getCategory());
+      return true;
+    }
+
+    document.addEventListener("keydown", handleSearchEnterEvent, true);
+    document.addEventListener("keyup", handleSearchEnterEvent, true);
+
+    document.addEventListener("submit", e => {
+      if (!enhancedSearchEnabled) return;
+      const form = e.target;
+      const input = form?.querySelector?.("input.lbe-search-input-active, input[type='search'], input[name='q'], input[name='search']");
+      if (!input || !isHeaderSearchInput(input)) return;
+      const typed = input.value.trim();
+      if (!typed) return;
+      e.preventDefault(); e.stopImmediatePropagation(); goToLetterboxdSearch(typed, getCategory());
+    }, true);
+
+    function scan() {
+      if (!extensionAlive()) return;
+      document.querySelectorAll("select.lbe-advanced-search-select").forEach(el => el.remove());
+      document.querySelectorAll(".lbe-advanced-search-form").forEach(el => el.classList.remove("lbe-advanced-search-form"));
+      document.querySelectorAll('input[type="search"], input[type="text"], input[name="q"], input[name="search"], input[id*="search" i], input[class*="search" i]').forEach(bindInput);
+      if (document.body.classList.contains("lbe-search-suggestions-open")) hideNativeSuggestionOverlays(activeInput);
+    }
+
+    document.addEventListener("focusin", e => {
+      if (!enhancedSearchEnabled || !textLikeSearchInput(e.target)) return;
+      if (isHeaderSearchInput(e.target)) { bindInput(e.target); activeInput = e.target; suppressNativeSuggestions(e.target); updateForInput(e.target, true); }
+    }, true);
+    document.addEventListener("click", e => { if (!panel || e.target === activeInput || panel.contains(e.target)) return; panel.hidden = true; });
+    window.addEventListener("resize", () => activeInput && !panel?.hidden && positionPanel(activeInput));
+    window.addEventListener("scroll", () => activeInput && !panel?.hidden && positionPanel(activeInput), true);
+
+    function start() {
+      scan();
+      if (!observer) { observer = new MutationObserver(scan); observer.observe(document.documentElement, { childList: true, subtree: true }); }
+    }
+
+    start();
+    safeStorageGet(DEFAULTS, s => {
+      enhancedSearchEnabled = s.toggleEnhancedSearch !== false;
+      suggestionsEnabled = enhancedSearchEnabled;
+      advancedEnabled = enhancedSearchEnabled;
+      currentCategory = CATEGORY_KEYS.has(s.lbeSearchCategory) ? s.lbeSearchCategory : "films";
+      start();
+    });
+
+    try {
+      if (extensionAlive()) chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "sync") return;
+      if (changes.toggleEnhancedSearch) {
+        enhancedSearchEnabled = changes.toggleEnhancedSearch.newValue !== false;
+        suggestionsEnabled = enhancedSearchEnabled;
+        advancedEnabled = enhancedSearchEnabled;
+        if (!enhancedSearchEnabled) {
+          hidePanel();
+          try { document.querySelectorAll(".lbe-search-input-active").forEach(el => el.classList.remove("lbe-search-input-active")); } catch (e) {}
+        }
+      }
+      if (changes.lbeSearchCategory) currentCategory = CATEGORY_KEYS.has(changes.lbeSearchCategory.newValue) ? changes.lbeSearchCategory.newValue : "films";
+      start();
+      if (activeInput) updateForInput(activeInput, true);
+      });
+    } catch (e) { markHeaderContextDead(e); }
+  })();
+
+
   // ── Activity Feed Controls Bootstrap (robust /activity/ support) ───────
   (function activityFeedControlsBootstrap() {
     const TYPES = {
@@ -18,7 +478,8 @@
     };
 
     const FILTER_TYPES = Object.keys(TYPES).filter(t => t !== "all");
-    const DEFAULTS = { mutedFriends: {}, feedTypes: FILTER_TYPES, panelCollapsed: false, mutedSectionCollapsed: false, feedSectionCollapsed: false };
+    const ACTIVITY_FILTER_VERSION = 4;
+    const DEFAULTS = { activityFilterVersion: ACTIVITY_FILTER_VERSION, mutedFriends: {}, feedTypes: FILTER_TYPES, panelCollapsed: false, mutedSectionCollapsed: false, feedSectionCollapsed: false };
     const FOLLOWING_CACHE_TTL = 24 * 60 * 60 * 1000;
     const MIN_VISIBLE_AFTER_HIDE = 10;
 
@@ -79,7 +540,7 @@
       if (/\badded\b/.test(t) && /\bwatchlist\b/.test(t)) types.add("watchlist");
       if (/\bliked\b/.test(t)) types.add("liked");
       if (/\blisted\b/.test(t) || (/\badded\b/.test(t) && /\blist\b/.test(t) && !/\bwatchlist\b/.test(t))) types.add("listed");
-      if (!types.size && /\b(reviewed|rated|followed|wrote a review)\b/.test(t)) types.add("all");
+      if (!types.size && /\b(reviewed|rated|wrote a review)\b/.test(t)) types.add("all");
       if (!types.size) types.add("all");
       return [...types];
     }
@@ -89,11 +550,11 @@
       const t = text(el);
       if (t.length < 8 || t.length > 3500) return false;
       const l = ` ${t.toLowerCase()} `;
-      return /\b(watched|rewatched|logged|added|listed|liked|reviewed|rated|followed|commented|replied)\b/.test(l) || l.includes(" wrote a review");
+      return /\b(watched|rewatched|logged|added|listed|liked|reviewed|rated|commented|replied)\b/.test(l) || l.includes(" wrote a review");
     }
 
     function activityActionCount(el) {
-      const m = (` ${text(el).toLowerCase()} `).match(/\b(watched|rewatched|logged|added|listed|liked|reviewed|rated|followed|commented|replied)\b/g);
+      const m = (` ${text(el).toLowerCase()} `).match(/\b(watched|rewatched|logged|added|listed|liked|reviewed|rated|commented|replied)\b/g);
       return m ? m.length : 0;
     }
 
@@ -115,7 +576,7 @@
       const avSlug = simpleSlugFromLink(avatar);
       if (avSlug) return avSlug;
 
-      const lead = text(row).match(/^([A-Za-z0-9_.-]{2,40})\s+(watched|rewatched|liked|added|listed|reviewed|rated|followed|commented|replied|wrote|logged)\b/i);
+      const lead = text(row).match(/^([A-Za-z0-9_.-]{2,40})\s+(watched|rewatched|liked|added|listed|reviewed|rated|commented|replied|wrote|logged)\b/i);
       if (lead) return norm(lead[1]);
 
       for (const a of [...row.querySelectorAll('a[href^="/"]')]) {
@@ -182,14 +643,19 @@
     }
 
     function normalizeSettings(raw) {
-      const feedTypes = Array.isArray(raw?.feedTypes) ? raw.feedTypes.filter(t => FILTER_TYPES.includes(t)) : FILTER_TYPES;
-      return { ...DEFAULTS, ...(raw || {}), feedTypes: feedTypes.length ? feedTypes : FILTER_TYPES, mutedFriends: raw?.mutedFriends || {} };
+      const storedFeedTypes = Array.isArray(raw?.feedTypes) ? raw.feedTypes.filter(t => FILTER_TYPES.includes(t)) : null;
+      let feedTypes = storedFeedTypes || FILTER_TYPES;
+
+
+      return { ...DEFAULTS, ...(raw || {}), activityFilterVersion: ACTIVITY_FILTER_VERSION, feedTypes: feedTypes.length ? feedTypes : FILTER_TYPES, mutedFriends: raw?.mutedFriends || {} };
     }
 
     function load(cb) {
       storageGet("sync", { toggleActivityFilters: true, activityFilters: DEFAULTS }, data => {
         if (!data || data.toggleActivityFilters === false) return;
         settings = normalizeSettings(data.activityFilters);
+        // Persist normalized filter settings immediately after version changes.
+        storageSet("sync", { activityFilters: settings });
         cleanExpired();
         cb();
       });

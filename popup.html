@@ -13,8 +13,12 @@
     .field { margin-bottom: 10px; }
     .field:last-child { margin-bottom: 0; }
     .field label { display: block; font-size: 12px; color: #9ab; margin-bottom: 4px; font-weight: 500; }
-    .field input[type="text"] { width: 100%; padding: 7px 10px; background: #1b2028; border: 1px solid #2c3440; border-radius: 4px; color: #def; font-size: 12px; font-family: monospace; outline: none; }
-    .field input[type="text"]:focus { border-color: #00e054; }
+    .field input[type="text"], .field input[type="password"] { width: 100%; padding: 7px 10px; background: #1b2028; border: 1px solid #2c3440; border-radius: 4px; color: #def; font-size: 12px; font-family: monospace; outline: none; }
+    .field input[type="text"]:focus, .field input[type="password"]:focus { border-color: #00e054; }
+    .section-title-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+    .section-title-row .section-title { margin-bottom:0; }
+    .icon-btn-sm { width:24px; height:22px; border:1px solid #2c3440; border-radius:4px; background:#1b2028; color:#9ab; cursor:pointer; font-size:12px; line-height:1; }
+    .icon-btn-sm:hover { color:#def; border-color:#456; }
     .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
     .toggle-row span { font-size: 13px; color: #9ab; }
     .toggle { position: relative; width: 36px; height: 20px; }
@@ -31,36 +35,34 @@
 <body>
   <div class="header">
     <h1>Letterboxd Enhanced</h1>
-    <p>v1.0 — External ratings &amp; poster overlay</p>
   </div>
 
   <div class="section">
-    <div class="section-title">API Keys</div>
+    <div class="section-title-row"><div class="section-title">API Keys</div><button id="toggleKeyVis" class="icon-btn-sm">&#9673;</button></div>
     <div class="field">
       <label>TMDB API Key (required) <a href="https://www.themoviedb.org/settings/api" target="_blank" style="color:#40bcf4;text-decoration:none;font-size:10px">(get free)</a></label>
-      <input type="text" id="tmdbKey" placeholder="Primary source — finds any film worldwide" />
+      <input type="password" id="tmdbKey" placeholder="Primary source — finds any film worldwide" autocomplete="off" />
     </div>
     <div class="field">
       <label>OMDb API Keys (optional, for RT) <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" style="color:#40bcf4;text-decoration:none;font-size:10px">(get free)</a></label>
-      <textarea id="omdbKey" placeholder="Adds Rotten Tomatoes + Metacritic scores" rows="2" style="width:100%;padding:7px 10px;background:#1b2028;border:1px solid #2c3440;border-radius:4px;color:#def;font-size:11px;font-family:monospace;outline:none;resize:vertical;"></textarea>
+      <input type="password" id="omdbKey" placeholder="Adds Rotten Tomatoes + Metacritic scores" autocomplete="off" />
       <div id="keyStats" style="margin-top:4px;font-size:10px;color:#678;"></div>
-    </div>
     </div>
   </div>
 
   <div class="section">
     <div class="section-title">Features</div>
     <div class="toggle-row">
-      <span>Poster Overlay</span>
-      <label class="toggle"><input type="checkbox" id="togglePoster" checked /><span class="slider"></span></label>
+      <span>Diary Stats</span>
+      <label class="toggle"><input type="checkbox" id="toggleDiaryStats" checked /><span class="slider"></span></label>
     </div>
     <div class="toggle-row">
-      <span>Sidebar Ratings</span>
-      <label class="toggle"><input type="checkbox" id="toggleRatings" checked /><span class="slider"></span></label>
+      <span>Enhanced Search Bar</span>
+      <label class="toggle"><input type="checkbox" id="toggleEnhancedSearch" checked /><span class="slider"></span></label>
     </div>
     <div class="toggle-row">
-      <span>Metadata Bar</span>
-      <label class="toggle"><input type="checkbox" id="toggleMeta" checked /><span class="slider"></span></label>
+      <span>Enhanced Activity Filters</span>
+      <label class="toggle"><input type="checkbox" id="toggleActivityFilters" checked /><span class="slider"></span></label>
     </div>
     <div class="toggle-row">
       <span>Friends Histogram</span>
@@ -71,12 +73,16 @@
       <label class="toggle"><input type="checkbox" id="toggleListProgress" checked /><span class="slider"></span></label>
     </div>
     <div class="toggle-row">
-      <span>Diary Stats</span>
-      <label class="toggle"><input type="checkbox" id="toggleDiaryStats" checked /><span class="slider"></span></label>
+      <span>Metadata Bar</span>
+      <label class="toggle"><input type="checkbox" id="toggleMeta" checked /><span class="slider"></span></label>
     </div>
     <div class="toggle-row">
-      <span>Enhanced Filters</span>
-      <label class="toggle"><input type="checkbox" id="toggleActivityFilters" checked /><span class="slider"></span></label>
+      <span>Poster Overlay</span>
+      <label class="toggle"><input type="checkbox" id="togglePoster" checked /><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <span>Sidebar Ratings</span>
+      <label class="toggle"><input type="checkbox" id="toggleRatings" checked /><span class="slider"></span></label>
     </div>
   </div>
 

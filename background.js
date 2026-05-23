@@ -43,10 +43,22 @@ function getOmdbKey() {
 function markUsed(k) { const d = new Date().toDateString(); if (!keyStats[k] || keyStats[k].day !== d) keyStats[k] = { used: 0, exhaustedUntil: 0, day: d }; keyStats[k].used++; }
 function markExhausted(k) { const d = new Date().toDateString(); if (!keyStats[k]) keyStats[k] = { used: 0, exhaustedUntil: 0, day: d }; const t = new Date(); t.setHours(24, 1, 0, 0); keyStats[k].exhaustedUntil = t.getTime(); }
 
+let keysReadyResolve;
+const keysReady = new Promise(resolve => { keysReadyResolve = resolve; });
 chrome.storage.sync.get({ omdbKey: "", tmdbKey: "" }, s => {
   OMDB_KEYS = parseOmdbKeys(s.omdbKey);
   TMDB_API_KEY = s.tmdbKey || "";
+  if (keysReadyResolve) keysReadyResolve();
 });
+async function ensureKeysReady() {
+  try { await keysReady; } catch (e) {}
+  if (!TMDB_API_KEY) {
+    try {
+      const s = await chrome.storage.sync.get({ tmdbKey: "" });
+      TMDB_API_KEY = s.tmdbKey || TMDB_API_KEY || "";
+    } catch (e) {}
+  }
+}
 chrome.storage.onChanged.addListener((c, a) => {
   if (a === "sync") {
     if (c.omdbKey) { OMDB_KEYS = parseOmdbKeys(c.omdbKey.newValue || ""); keyStats = {}; }
@@ -601,8 +613,64 @@ async function fetchAllRatings(title, year, tmdbId, imdbId, filmSlug, tmdbType =
   return result;
 }
 
+
+
+// ── Header search suggestions (TMDB → Letterboxd search) ─────────
+async function searchTmdbSuggestions(query) {
+  query = String(query || "").trim();
+  if (!query || query.length < 1) return [];
+  await ensureKeysReady();
+  if (!TMDB_API_KEY) return [];
+
+  const cacheKey = `tmdb-search-suggest:v3-movie:${query.toLowerCase()}`;
+  return cached(cacheKey, async () => {
+    const sp = new URLSearchParams({
+      api_key: TMDB_API_KEY,
+      query,
+      include_adult: "false",
+      language: "en-US",
+      page: "1",
+    });
+
+    const res = await fetch(`https://api.themoviedb.org/3/search/movie?${sp}`);
+    if (!res.ok) throw new Error(`TMDB search failed: ${res.status}`);
+    const data = await res.json();
+
+    return (data.results || [])
+      .filter(item => item.title)
+      .slice(0, 8)
+      .map(item => {
+        const title = item.title || "";
+        const date = item.release_date || "";
+        return {
+          id: item.id,
+          title,
+          year: date ? date.slice(0, 4) : "",
+          rating: typeof item.vote_average === "number" ? item.vote_average.toFixed(1) : "",
+          mediaType: "movie",
+          poster: item.poster_path ? `https://image.tmdb.org/t/p/w92${item.poster_path}` : "",
+        };
+      });
+  });
+}
+
 // ── Message handler ──────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+
+
+  if (msg.type === "SEARCH_TMDB_SUGGESTIONS") {
+    (async () => {
+      try {
+        const results = await searchTmdbSuggestions(msg.query);
+        sendResponse({ results, error: null, tmdbConfigured: !!TMDB_API_KEY });
+      } catch (err) {
+        console.error("LBE: TMDB suggestions error", err);
+        sendResponse({ results: [], error: err.message, tmdbConfigured: !!TMDB_API_KEY });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === "FETCH_RATINGS") {
     const { title, year, username, filmSlug, tmdbId, imdbId, tmdbType } = msg;
     (async () => {

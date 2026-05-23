@@ -1,6 +1,6 @@
 # 🎬 Letterboxd Enhanced
 
-A Chrome extension that enhances [Letterboxd](https://letterboxd.com/) with external ratings, a poster overlay, rearranged metadata, friends' rating histograms, list progress bars, diary analytics, and activity feed filters.
+A Chrome extension that enhances [Letterboxd](https://letterboxd.com/) with external ratings, a poster overlay, rearranged metadata, friends' rating histograms, list progress bars, diary analytics, enhanced header search, and activity feed filters.
 
 ![Chrome](https://img.shields.io/badge/Chrome-Manifest%20V3-green) ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -36,6 +36,15 @@ Scrapes your friends' ratings for each film and displays a histogram with averag
 
 ### 📈 List Progress Bars
 Shows a progress bar on list cards (activity feed, list pages) indicating how many films you've watched out of the total.
+
+### 🔎 Enhanced Search
+Combines movie suggestions and search-result type selection into one compact Letterboxd header search panel. The panel appears under the native search bar and does not move the site navigation.
+
+- **Movie suggestions** — TMDB-powered film-only suggestions with poster, title, year, and rating. TV shows are intentionally excluded.
+- **Search type dropdown** — Choose All, Films, Reviews, Lists, Original Lists, Stories, Cast/Crew, Members, Tags, Journal, Podcasts, or Full-text.
+- **Exact Enter behavior** — Pressing Enter searches the text currently typed in the selected category using Letterboxd URLs such as `/search/films/avenger+infinity/?adult`.
+- **Suggestion clicks** — Clicking a movie suggestion searches Letterboxd Films for that movie title.
+- **Single popup toggle** — Controlled by the combined **Enhanced Search** setting.
 
 
 ### 🧹 Enhanced Activity Filters
@@ -136,8 +145,9 @@ Or download and unzip the repository.
    - Metadata bar (runtime + genres) under the title
    - Sidebar ratings panel (IMDb, RT, MAL, Metacritic)
    - Hover the poster for the overlay
-3. Go to your activity feed — hover the ⓘ on any poster
-4. Go to any user's diary page — you should see the Diary Stats panel
+3. Open the Letterboxd header search — you should see the Enhanced Search panel with a category dropdown and movie suggestions
+4. Go to your activity feed — hover the ⓘ on any poster
+5. Go to any user's diary page — you should see the Diary Stats panel
 
 ---
 
@@ -160,6 +170,7 @@ Injects into page:                  7. Diary page scrape + enrichment
 • Grid info cards                   • chrome.storage.local (24h)
 • Friends histogram                 • Per-user local cache (permanent)
 • List progress bars                • OMDb key rotation + exhaustion
+• Enhanced search panel             • TMDB movie suggestions
 • Diary stats panel                 • Diary stats (24h TTL)
 ```
 

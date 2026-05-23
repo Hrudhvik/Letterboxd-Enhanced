@@ -1,4 +1,35 @@
-const DEFAULTS = { omdbKey: "", tmdbKey: "", togglePoster: true, toggleRatings: true, toggleMeta: true, toggleFriendsHisto: true, toggleListProgress: true, toggleDiaryStats: true, toggleActivityFilters: true };
+const DEFAULTS = {
+  omdbKey: "",
+  tmdbKey: "",
+  togglePoster: true,
+  toggleRatings: true,
+  toggleMeta: true,
+  toggleFriendsHisto: true,
+  toggleListProgress: true,
+  toggleDiaryStats: true,
+  toggleActivityFilters: true,
+  toggleEnhancedSearch: true,
+  // Legacy keys kept so older installs migrate cleanly to the single Enhanced Search toggle.
+  toggleSearchSuggestions: true,
+  toggleAdvancedSearchDropdown: true
+};
+
+
+const toggleKeyVis = document.getElementById("toggleKeyVis");
+if (toggleKeyVis) {
+  toggleKeyVis.addEventListener("click", () => {
+    const keyInputs = [document.getElementById("tmdbKey"), document.getElementById("omdbKey")].filter(Boolean);
+    const shouldShow = keyInputs.some((input) => input.type === "password");
+    keyInputs.forEach((input) => {
+      input.type = shouldShow ? "text" : "password";
+    });
+    toggleKeyVis.innerHTML = shouldShow ? "&#9678;" : "&#9673;";
+    toggleKeyVis.setAttribute("aria-label", shouldShow ? "Hide API keys" : "Show API keys");
+    toggleKeyVis.title = shouldShow ? "Hide API keys" : "Show API keys";
+  });
+  toggleKeyVis.setAttribute("aria-label", "Show API keys");
+  toggleKeyVis.title = "Show API keys";
+}
 
 chrome.storage.sync.get(DEFAULTS, (s) => {
   document.getElementById("omdbKey").value = s.omdbKey;
@@ -9,6 +40,8 @@ chrome.storage.sync.get(DEFAULTS, (s) => {
   document.getElementById("toggleFriendsHisto").checked = s.toggleFriendsHisto;
   document.getElementById("toggleListProgress").checked = s.toggleListProgress;
   document.getElementById("toggleDiaryStats").checked = s.toggleDiaryStats;
+  const enhancedSearchToggle = document.getElementById("toggleEnhancedSearch");
+  if (enhancedSearchToggle) enhancedSearchToggle.checked = s.toggleEnhancedSearch !== false;
   const activityToggle = document.getElementById("toggleActivityFilters");
   if (activityToggle) activityToggle.checked = s.toggleActivityFilters;
 });
@@ -37,6 +70,10 @@ document.getElementById("save").addEventListener("click", () => {
     toggleFriendsHisto: document.getElementById("toggleFriendsHisto").checked,
     toggleListProgress: document.getElementById("toggleListProgress").checked,
     toggleDiaryStats: document.getElementById("toggleDiaryStats").checked,
+    toggleEnhancedSearch: document.getElementById("toggleEnhancedSearch")?.checked ?? true,
+    // Keep legacy keys synced for content scripts from older loaded builds.
+    toggleSearchSuggestions: document.getElementById("toggleEnhancedSearch")?.checked ?? true,
+    toggleAdvancedSearchDropdown: document.getElementById("toggleEnhancedSearch")?.checked ?? true,
     toggleActivityFilters: document.getElementById("toggleActivityFilters")?.checked ?? true,
   }, () => {
     document.getElementById("status").style.display = "block";

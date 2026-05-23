@@ -48,7 +48,7 @@
 
 /* Card content */
 .lbe-ic-title {
-  font-size: 14px; font-weight: 700; color: #f0f0f0;
+  font-size: 13px; font-weight: 700; color: #f0f0f0;
   margin-bottom: 4px; line-height: 1.3;
   word-wrap: break-word; overflow-wrap: break-word;
 }
@@ -1422,3 +1422,199 @@
   max-width: 100%;
 }
 .lbe-ds-heat-legend .lbe-ds-heat-cell { width: 10px; height: 10px; min-width: 10px; min-height: 10px; max-width: 10px; max-height: 10px; aspect-ratio: auto; }
+
+
+/* Header search suggestions */
+#lbe-search-suggestions {
+  position: absolute;
+  z-index: 2147483647;
+  overflow: hidden;
+  max-height: min(58vh, 360px);
+  overflow-y: auto;
+  border: 1px solid rgba(69, 85, 102, 0.72);
+  border-radius: 4px;
+  background: #1f2227;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  color: #d8e0ea;
+  font-family: inherit;
+}
+
+#lbe-search-suggestions::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 28px;
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 7px solid #1f2227;
+}
+
+#lbe-search-suggestions[hidden] {
+  display: none !important;
+}
+
+.lbe-search-category-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: #181b20;
+  color: #9ab;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.lbe-search-category-row span {
+  white-space: nowrap;
+  color: #8da0b3;
+}
+
+.lbe-search-category-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  border: 1px solid #3d4854;
+  border-radius: 3px;
+  background: #0f1217;
+  color: #d8e0ea;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.lbe-search-category-select:hover,
+.lbe-search-category-select:focus {
+  border-color: #7b61ff;
+  color: #fff;
+}
+
+.lbe-search-direct {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+  background: transparent;
+  color: #9ab;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lbe-search-direct:hover,
+.lbe-search-direct:focus {
+  background: #2c3440;
+  color: #fff;
+  outline: none;
+}
+
+.lbe-search-suggestion-state {
+  padding: 12px 14px;
+  color: #9ab;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.lbe-search-suggestion-query {
+  display: none;
+}
+
+.lbe-search-suggestion {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lbe-search-suggestion:hover,
+.lbe-search-suggestion:focus {
+  background: #2c3440;
+  outline: none;
+}
+
+.lbe-search-suggestion-poster {
+  display: block;
+  width: 34px;
+  height: 50px;
+  border-radius: 3px;
+  background: #14181c;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.lbe-search-suggestion-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lbe-search-suggestion-title {
+  display: block;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.22;
+}
+
+.lbe-search-suggestion-meta {
+  display: block;
+  margin-top: 3px;
+  color: #8da0b3;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.lbe-search-suggestion-type {
+  display: none;
+}
+
+/* Keep Letterboxd's own autocomplete from appearing under the enhanced panel. */
+.lbe-search-native-hidden .autocomplete,
+.lbe-search-native-hidden .autocomplete-results,
+.lbe-search-native-hidden .autocomplete-suggestions,
+.lbe-search-native-hidden .search-autocomplete,
+.lbe-search-native-hidden .search-results,
+.lbe-search-native-hidden .search-result,
+.lbe-search-native-hidden .quick-search,
+.lbe-search-native-hidden .quick-search-results,
+.lbe-search-native-hidden .live-search-results,
+.lbe-search-native-hidden .js-search-results,
+.lbe-search-native-hidden .search-menu,
+.lbe-search-native-hidden .search-panel,
+.lbe-search-native-hidden .suggestions,
+.lbe-search-native-hidden .results,
+.lbe-search-native-hidden [class*="autocomplete" i],
+.lbe-search-native-hidden [id*="autocomplete" i],
+body.lbe-search-suggestions-open .ui-autocomplete,
+body.lbe-search-suggestions-open .ui-menu,
+body.lbe-search-suggestions-open .ac_results,
+body.lbe-search-suggestions-open .lbe-native-search-suggestions-hidden {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+
+.lbe-search-helper {
+  padding: 11px 13px 12px;
+  color: #9ab;
+  font-size: 12px;
+}
+
